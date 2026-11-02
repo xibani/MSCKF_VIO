@@ -1,0 +1,23 @@
+# config/frontend.yaml — Etapa 8: detección y seguimiento de puntos
+
+deteccion:
+  fast_umbral: 20            # diferencia de brillo mínima para que FAST vea una esquina
+  celdas_x: 8                # la imagen se divide en 8 x 6 celdas (de 80 x 80 px a 640 x 480)
+  celdas_y: 6
+  max_por_celda: 3           # como mucho 3 puntos por celda: puntos repartidos
+  max_puntos: 150            # puntos seguidos a la vez, en total
+  distancia_min_px: 15       # un punto nuevo no puede estar más cerca de otro ya seguido
+
+seguimiento:
+  ventana_px: 21             # lado de la ventanita que busca Lucas-Kanade
+  niveles_piramide: 3        # niveles por encima del original: 1/2, 1/4, 1/8
+  iteraciones: 30
+  epsilon: 0.01              # parar cuando la corrección baje de 0,01 px
+  ida_vuelta_max_px: 1.0     # seguir hacia atrás debe volver a menos de esto
+  margen_borde_px: 10        # media ventana: más cerca del borde, la ventana se sale de la imagen
+
+geometria:
+  umbral_px: 1.0             # error máximo respecto a la matriz esencial (en píxeles)
+  confianza: 0.999           # probabilidad de que RANSAC encuentre la hipótesis buena
+  paralaje_min_px: 1.0       # si la mediana del desplazamiento es menor, no se usa RANSAC
+  puntos_min: 8              # con menos puntos tampoco

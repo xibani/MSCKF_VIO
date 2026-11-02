@@ -1,0 +1,14 @@
+# Intrínsecos PROVISIONALES de la cámara (sin calibrar), calculados con la hoja de
+# datos de la Camera Module v1 (OV5647): focal 3,60 mm, píxel 1,4 µm, modo 640x480
+# agrupado 4x4 -> píxel efectivo 5,6 µm -> f = 3,60 mm / 5,6 µm ≈ 643 px.
+# Centro óptico supuesto en el centro de la imagen y sin distorsión.
+# SUSTITUIR por el resultado de herramientas/calibrar_camara.py (etapa 7.1).
+ancho: 640
+alto: 480
+fx: 643.0
+fy: 643.0
+cx: 320.0
+cy: 240.0
+dist_k1_k2_p1_p2_k3: [0.0, 0.0, 0.0, 0.0, 0.0]
+info:
+  provisional: true
