@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 
-from captura.verificar import analizar_intervalos, analizar_latencia, variacion_pct
+from captura.verificar import (analizar_cobertura, analizar_intervalos, analizar_latencia,
+                               analizar_reposo, variacion_pct)
 
 F_HZ = 200.0
 PERIODO_NS = 5_000_000          # 5 ms
@@ -61,3 +62,28 @@ def test_latencia():
 def test_variacion_pct():
     assert variacion_pct([8000, 8000, 8000]) == 0.0
     assert variacion_pct([7900, 8000, 8100]) == pytest.approx(2.5)
+
+
+def test_cobertura():
+    t_imu = marcas(2001)                             # 0 a 10 s
+    t_cam = t_imu[200:1801:10]                       # 1 a 9 s
+    r = analizar_cobertura(t_imu, t_cam)
+    assert r["margen_ini_s"] == pytest.approx(1.0)
+    assert r["margen_fin_s"] == pytest.approx(1.0)
+
+
+def test_reposo():
+    rng = np.random.default_rng(1)
+    n = 2001                                         # 10 s a 200 Hz
+    t = marcas(n)
+    sesgo = np.radians([0.5, -0.3, 0.1])             # rad/s
+    w = sesgo + rng.normal(0.0, np.radians(0.05), (n, 3))
+    a = np.array([0.0, 9.81, 0.0]) + rng.normal(0.0, 0.02, (n, 3))   # +y hacia arriba
+    w[600:] += 1.0                                   # a partir de 3 s se mueve: no debe contar
+
+    r = analizar_reposo(t, w, a, t_reposo_s=2.0)
+    assert r["n"] == 400                             # 2 s a 200 Hz
+    assert r["eje_arriba"] == "+y"
+    assert r["norma_a"] == pytest.approx(9.81, abs=0.01)
+    assert r["sesgo_gir_dps"] == pytest.approx([0.5, -0.3, 0.1], abs=0.01)
+    assert r["ruido_gir_dps"] == pytest.approx([0.05, 0.05, 0.05], abs=0.01)

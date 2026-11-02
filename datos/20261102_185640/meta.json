@@ -1,0 +1,51 @@
+{
+  "fecha": "2026-11-02T18:56:58.394971",
+  "formato": "EuRoC/ASL, tiempos en ns de CLOCK_MONOTONIC",
+  "duracion_pedida_s": 70,
+  "imu": {
+    "bus_i2c": 1,
+    "direccion": 104,
+    "who_am_i": 104,
+    "frecuencia_hz": 200,
+    "dlpf_cfg": 3,
+    "rango_gir_dps": 500,
+    "rango_acc_g": 4,
+    "nucleo_cpu": 3
+  },
+  "camara": {
+    "ancho": 640,
+    "alto": 480,
+    "profundidad_bits": 10,
+    "fps": 20,
+    "buffers": 6,
+    "t_ajuste_ae_s": 2.0,
+    "t_aplicar_s": 0.5,
+    "exposicion_max_us": 8000,
+    "ganancia_max": 8.0,
+    "compresion_png": 1
+  },
+  "exposicion_fijada": {
+    "exposicion_us": 7968,
+    "ganancia": 8.0,
+    "brillo_relativo": 0.24169041676255215,
+    "controles": {
+      "ExposureTime": 8000,
+      "AnalogueGain": 8.0,
+      "ExposureTimeMode": 1,
+      "AnalogueGainMode": 1,
+      "AwbEnable": false,
+      "ColourGains": [
+        1.5917314291000366,
+        1.2416750192642212
+      ]
+    }
+  },
+  "contadores": {
+    "muestras_imu": 2985,
+    "errores_i2c": 0,
+    "imagenes": 240,
+    "descartadas_cola_llena": 0,
+    "escritas": 240,
+    "errores_escritura": 0
+  }
+}

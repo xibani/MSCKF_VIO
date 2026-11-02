@@ -60,3 +60,46 @@ def variacion_pct(valores):
     """(máximo - mínimo) / media, en %. 0 = todos los valores iguales."""
     v = np.asarray(valores, dtype=np.float64)
     return 100.0 * (v.max() - v.min()) / v.mean()
+
+
+def analizar_cobertura(t_imu_ns, t_cam_ns):
+    """¿Cubre la IMU todo el tramo de imágenes?
+
+    Devuelve: dict con margen_ini_s (cuánto antes de la primera imagen empieza
+    la IMU) y margen_fin_s (cuánto después de la última acaba). Ambos deben ser > 0.
+    """
+    return {"margen_ini_s": (t_cam_ns[0] - t_imu_ns[0]) / 1e9,
+            "margen_fin_s": (t_imu_ns[-1] - t_cam_ns[-1]) / 1e9}
+
+
+def analizar_reposo(t_ns, w, a, t_reposo_s):
+    """Estadística del tramo inicial de IMU, que debe estar quieto.
+
+    t_ns: array (N,) int64. w: array (N, 3) [rad/s]. a: array (N, 3) [m/s²].
+    t_reposo_s: duración del tramo inicial que se analiza.
+    Devuelve: dict con:
+        n: muestras del tramo
+        a_media: (3,) media del acelerómetro [m/s²]; apunta hacia arriba
+        norma_a: |a_media| [m/s²]; debería rondar 9,8
+        eje_arriba: texto como "+z", el eje más alineado con la vertical
+        sesgo_gir_dps: (3,) media del giroscopio [°/s] = sesgo inicial
+        ruido_gir_dps: (3,) desviación típica del giroscopio [°/s]
+        ruido_acc: (3,) desviación típica del acelerómetro [m/s²]
+    """
+    en_reposo = (t_ns - t_ns[0]) / 1e9 < t_reposo_s
+    a_r = a[en_reposo]
+    w_r = np.degrees(w[en_reposo])
+
+    a_media = a_r.mean(axis=0)
+    eje = int(np.argmax(np.abs(a_media)))
+    signo = "+" if a_media[eje] > 0 else "-"
+
+    return {
+        "n": int(en_reposo.sum()),
+        "a_media": a_media,
+        "norma_a": float(np.linalg.norm(a_media)),
+        "eje_arriba": signo + "xyz"[eje],
+        "sesgo_gir_dps": w_r.mean(axis=0),
+        "ruido_gir_dps": w_r.std(axis=0),
+        "ruido_acc": a_r.std(axis=0),
+    }
