@@ -62,3 +62,181 @@ def triangular_lineal(poses, xy):
     if abs(X[3]) < 1e-12 * np.linalg.norm(X[:3]):
         return None
     return X[:3] / X[3]
+
+
+# =====================================================================
+# Paso 9.2 — Refinamiento por Gauss-Newton en inversa de profundidad
+# =====================================================================
+def pose_relativa(R_a_w, t_a_w, R_b_w, t_b_w):
+    """Pose de la cámara b respecto a la a: p_b = R_b_a · p_a + t_b_a.
+
+    Sale de despejar p_w = R_a_wᵀ (p_a - t_a_w) y sustituir en p_b = R_b_w p_w + t_b_w.
+    """
+    R_b_a = R_b_w @ R_a_w.T
+    t_b_a = t_b_w - R_b_a @ t_a_w
+    return R_b_a, t_b_a
+
+
+def a_inversa_profundidad(p_a):
+    """Punto en ejes de la cámara ancla -> (alfa, beta, rho) = (X/Z, Y/Z, 1/Z)."""
+    return np.array([p_a[0] / p_a[2], p_a[1] / p_a[2], 1.0 / p_a[2]])
+
+
+def desde_inversa_profundidad(theta):
+    """(alfa, beta, rho) -> punto en ejes de la cámara ancla: (alfa, beta, 1) / rho."""
+    alfa, beta, rho = theta
+    return np.array([alfa, beta, 1.0]) / rho
+
+
+def prediccion_y_jacobiano(theta, poses_rel):
+    """Predicción de cada observación y su jacobiano respecto a theta = (alfa, beta, rho).
+
+    poses_rel: lista de N parejas (R_i_a, t_i_a): cada cámara respecto a la ancla.
+    Devuelve: h (N, 2) predicciones normalizadas, J (2N, 3) = d h / d theta.
+
+    En la cámara i el punto es p_i = R_i_a · (alfa, beta, 1) / rho + t_i_a. Multiplicar
+    por rho no cambia su proyección, así que se trabaja con
+        g = R_i_a · (alfa, beta, 1) + rho · t_i_a,      h = (g_x / g_z, g_y / g_z)
+    y por la regla de la cadena  d h / d theta = (d h / d g) · (d g / d theta), con
+        d g / d theta = [ R_i_a[:, 0] | R_i_a[:, 1] | t_i_a ]
+        d h / d g     = [[1/g_z, 0, -g_x/g_z²], [0, 1/g_z, -g_y/g_z²]]
+    """
+    alfa, beta, rho = theta
+    n = len(poses_rel)
+    h = np.zeros((n, 2))
+    J = np.zeros((2 * n, 3))
+    for i, (R, t) in enumerate(poses_rel):
+        # 1. Predicción
+        g = R @ np.array([alfa, beta, 1.0]) + rho * t
+        h[i] = g[:2] / g[2]
+        # 2. Jacobiano por la regla de la cadena
+        dh_dg = np.array([[1.0 / g[2], 0.0, -g[0] / g[2] ** 2],
+                          [0.0, 1.0 / g[2], -g[1] / g[2] ** 2]])
+        dg_dtheta = np.column_stack([R[:, 0], R[:, 1], t])
+        J[2 * i:2 * i + 2] = dh_dg @ dg_dtheta
+    return h, J
+
+
+def errores_reproyeccion_px(p_w, poses, xy, focal_px):
+    """Distancia entre lo observado y la proyección de p_w en cada imagen [px]."""
+    errores = []
+    for (R, t), obs in zip(poses, xy):
+        prediccion, _ = proyectar_normalizado(R, t, p_w)
+        errores.append(np.linalg.norm(prediccion - obs) * focal_px)
+    return np.array(errores)
+
+
+def refinar(p_w, poses, xy, cfg_gn):
+    """Gauss-Newton: el punto que minimiza la suma de errores de reproyección al cuadrado.
+
+    p_w: (3,) punto inicial (el de triangular_lineal). La ancla es la primera pose.
+    cfg_gn: sección "gauss_newton" de config/triangulacion.yaml.
+    Devuelve: (p_w (3,), info) con info = {"iteraciones", "convergido"}.
+    """
+    # 1. Todo respecto a la cámara ancla y en inversa de profundidad
+    R_a_w, t_a_w = poses[0]
+    poses_rel = [pose_relativa(R_a_w, t_a_w, R, t) for R, t in poses]
+    theta = a_inversa_profundidad(transformar(R_a_w, t_a_w, p_w))
+    observado = np.asarray(xy, dtype=float).ravel()          # (2N,): x0, y0, x1, y1...
+
+    convergido = False
+    iteracion = 0
+    for iteracion in range(1, cfg_gn["iteraciones_max"] + 1):
+        # 2. Residuo r = observado - predicho, y jacobiano de la predicción
+        h, J = prediccion_y_jacobiano(theta, poses_rel)
+        r = observado - h.ravel()
+        # 3. Ecuaciones normales: (Jᵀ J) · delta = Jᵀ r
+        H = J.T @ J
+        b = J.T @ r
+        try:
+            delta = np.linalg.solve(H, b)
+        except np.linalg.LinAlgError:
+            break                                            # H singular: sin solución única
+        # 4. Actualizar y comprobar si la corrección ya es despreciable
+        theta = theta + delta
+        if np.linalg.norm(delta) < cfg_gn["tolerancia"]:
+            convergido = True
+            break
+
+    # 5. Volver al mundo: p_w = R_a_wᵀ (p_a - t_a_w)
+    p_a = desde_inversa_profundidad(theta)
+    p_w = R_a_w.T @ (p_a - t_a_w)
+    return p_w, {"iteraciones": iteracion, "convergido": convergido}
+
+
+# =====================================================================
+# Paso 9.3 — Fiabilidad
+# =====================================================================
+def angulo_paralaje(poses, xy):
+    """Mayor ángulo entre los rayos observados, expresados en el mundo [grados].
+
+    Solo usa las observaciones y las orientaciones: se puede calcular ANTES de triangular.
+    El rayo de la observación (x, y) en ejes de la cámara es (x, y, 1); en el mundo,
+    R_c_wᵀ · (x, y, 1). Si la cámara solo ha girado, todos los rayos son paralelos: 0°.
+    """
+    rayos = []
+    for (R, _), (x, y) in zip(poses, xy):
+        d = R.T @ np.array([x, y, 1.0])
+        rayos.append(d / np.linalg.norm(d))
+    maximo = 0.0
+    for i in range(len(rayos)):
+        for j in range(i + 1, len(rayos)):
+            # atan2(|a x b|, a · b): preciso también para ángulos muy pequeños (arccos no lo es)
+            angulo = np.arctan2(np.linalg.norm(np.cross(rayos[i], rayos[j])), rayos[i] @ rayos[j])
+            maximo = max(maximo, angulo)
+    return np.degrees(maximo)
+
+
+def es_fiable(p_w, poses, xy, cfg_fia, focal_px):
+    """¿Se puede usar este punto? Devuelve (bool, motivo)."""
+    # 1. Suficiente ángulo entre los rayos
+    if angulo_paralaje(poses, xy) < cfg_fia["paralaje_min_grados"]:
+        return False, "paralaje insuficiente"
+    # 2. Delante de todas las cámaras
+    for R, t in poses:
+        if transformar(R, t, p_w)[2] < cfg_fia["profundidad_min_m"]:
+            return False, "detrás de alguna cámara"
+    # 3. Su proyección coincide con lo observado en todas las imágenes
+    if errores_reproyeccion_px(p_w, poses, xy, focal_px).max() > cfg_fia["error_max_px"]:
+        return False, "error de reproyección alto"
+    return True, "ok"
+
+
+def triangular(poses, xy, cfg, focal_px):
+    """Triangulación completa: comprobaciones baratas, DLT, Gauss-Newton y fiabilidad.
+
+    cfg: dict de config/triangulacion.yaml.
+    Devuelve: dict con p_w (o None), fiable, motivo, paralaje_grados, error_max_px, iteraciones.
+    """
+    fia = cfg["fiabilidad"]
+    xy = np.asarray(xy, dtype=float)
+    resultado = {"p_w": None, "fiable": False, "motivo": "", "paralaje_grados": 0.0,
+                 "error_max_px": np.inf, "iteraciones": 0}
+
+    # 1. Comprobaciones previas: no merece la pena triangular sin ellas
+    if len(poses) < fia["observaciones_min"]:
+        resultado["motivo"] = "pocas observaciones"
+        return resultado
+    resultado["paralaje_grados"] = angulo_paralaje(poses, xy)
+    if resultado["paralaje_grados"] < fia["paralaje_min_grados"]:
+        resultado["motivo"] = "paralaje insuficiente"
+        return resultado
+
+    # 2. Estimación lineal
+    p_w = triangular_lineal(poses, xy)
+    if p_w is None:
+        resultado["motivo"] = "punto en el infinito"
+        return resultado
+    profundidades = [transformar(R, t, p_w)[2] for R, t in poses]
+    if min(profundidades) < fia["profundidad_min_m"]:
+        resultado["p_w"] = p_w
+        resultado["motivo"] = "detrás de alguna cámara"
+        return resultado
+
+    # 3. Refinamiento y comprobación final
+    p_w, info = refinar(p_w, poses, xy, cfg["gauss_newton"])
+    resultado["p_w"] = p_w
+    resultado["iteraciones"] = info["iteraciones"]
+    resultado["error_max_px"] = errores_reproyeccion_px(p_w, poses, xy, focal_px).max()
+    resultado["fiable"], resultado["motivo"] = es_fiable(p_w, poses, xy, fia, focal_px)
+    return resultado
