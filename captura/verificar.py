@@ -41,3 +41,22 @@ def analizar_intervalos(t_ns, f_nominal_hz, factor_hueco):
         "no_crecientes": int(np.sum(dt <= 0)),
         "dt_s": dt,
     }
+    
+
+def analizar_latencia(t_sensor_ns, t_llegada_ns):
+    """Latencia de entrega: cuánto tarda cada imagen en llegar al programa.
+
+    Si cámara y programa usan el mismo reloj, sale positiva y de decenas de
+    ms. Valores negativos o enormes indican relojes distintos.
+    Devuelve: dict con media_ms, min_ms y max_ms.
+    """
+    latencia_ms = (t_llegada_ns - t_sensor_ns).astype(np.float64) / 1e6
+    return {"media_ms": latencia_ms.mean(),
+            "min_ms": latencia_ms.min(),
+            "max_ms": latencia_ms.max()}
+
+
+def variacion_pct(valores):
+    """(máximo - mínimo) / media, en %. 0 = todos los valores iguales."""
+    v = np.asarray(valores, dtype=np.float64)
+    return 100.0 * (v.max() - v.min()) / v.mean()

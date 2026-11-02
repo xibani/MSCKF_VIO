@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from captura.verificar import analizar_intervalos
+from captura.verificar import analizar_intervalos, analizar_latencia, variacion_pct
 
 F_HZ = 200.0
 PERIODO_NS = 5_000_000          # 5 ms
@@ -46,3 +46,18 @@ def test_detecta_marcas_no_crecientes():
     t[50] = t[49]                            # dos marcas iguales
     r = analizar_intervalos(t, F_HZ, FACTOR_HUECO)
     assert r["no_crecientes"] == 1
+
+
+def test_latencia():
+    t_sensor = marcas(100)
+    t_llegada = t_sensor + 30_000_000                # todas llegan 30 ms después
+    t_llegada[10] += 20_000_000                      # una llega 50 ms después
+    r = analizar_latencia(t_sensor, t_llegada)
+    assert r["min_ms"] == pytest.approx(30.0)
+    assert r["max_ms"] == pytest.approx(50.0)
+    assert r["media_ms"] == pytest.approx(30.2)
+
+
+def test_variacion_pct():
+    assert variacion_pct([8000, 8000, 8000]) == 0.0
+    assert variacion_pct([7900, 8000, 8100]) == pytest.approx(2.5)

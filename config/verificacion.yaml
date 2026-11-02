@@ -5,3 +5,8 @@ factor_hueco: 1.5        # un Δt mayor que 1.5 periodos nominales cuenta como h
 imu:
   perdidas_max_pct: 0.1  # porcentaje máximo de muestras perdidas
   jitter_max_ms: 0.5     # desviación típica máxima de Δt
+
+camara:
+  perdidas_max: 0                    # imágenes perdidas permitidas
+  latencia_max_ms: 500.0             # llegada - sensor por encima de esto: relojes distintos o programa atascado
+  exposicion_variacion_max_pct: 1.0  # variación máxima de la exposición entre imágenes
