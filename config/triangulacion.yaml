@@ -1,0 +1,11 @@
+# config/triangulacion.yaml — Etapa 9: posición 3D de un punto visto en varias imágenes
+
+gauss_newton:
+  iteraciones_max: 20        # casi siempre converge en 3-5
+  tolerancia: 1.0e-10        # parar cuando la corrección de (alfa, beta, rho) baje de esto
+
+fiabilidad:
+  paralaje_min_grados: 1.0   # ángulo mínimo entre los rayos: por debajo, la profundidad no está determinada
+  profundidad_min_m: 0.1     # delante de TODAS las cámaras y a más de esto
+  error_max_px: 3.0          # error de reproyección máximo en cualquier imagen (≈ 3 sigma con 1 px de ruido)
+  observaciones_min: 2       # con una sola imagen no hay triangulación posible
