@@ -5,6 +5,7 @@ Uso, desde ~/svo-pi:
     python -m herramientas.posicion_offline datos/imu_20261102_183000
     python -m herramientas.posicion_offline datos/imu_20261102_183000 --g-medida
 --g-medida usa como gravedad la |a| medida en reposo en lugar de 9,80665.
+--calibrado corrige antes el acelerómetro con config/imu_calibracion.yaml (paso 7.2).
 Guarda posicion.png en la carpeta de la grabación.
 """
 
@@ -17,6 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from captura import euroc
+from vio import calibracion_imu as ci
 from vio import inicializacion as ini
 from vio.config import cargar_config
 from vio.constantes import G, GRAVEDAD_W
@@ -31,12 +33,18 @@ def main():
     parser.add_argument("carpeta", help="carpeta de la grabación (la que contiene mav0/)")
     parser.add_argument("--g-medida", action="store_true",
                         help="usar |a| del reposo como gravedad")
+    parser.add_argument("--calibrado", action="store_true",
+                        help="corregir el acelerómetro con config/imu_calibracion.yaml")
     args = parser.parse_args()
     carpeta = Path(args.carpeta)
     cfg = cargar_config("orientacion")
 
     # --- 1. Cargar e inicializar con el reposo inicial ---
     t_ns, w, a = euroc.leer_imu(euroc.ruta_imu(carpeta))
+    if args.calibrado:
+        sesgo_a, escala_a = ci.cargar_calibracion_imu()
+        a = ci.corregir_acelerometro(a, sesgo_a, escala_a)
+        print(f"Acelerómetro corregido: sesgo {np.round(sesgo_a, 4)} | escala {np.round(escala_a, 5)}")
     t_s = (t_ns - t_ns[0]) / 1e9
     en_reposo = t_s < cfg["inicializacion"]["t_reposo_s"]
     reposo = ini.estimar_reposo(w[en_reposo], a[en_reposo])

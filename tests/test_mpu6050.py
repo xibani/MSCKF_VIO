@@ -160,3 +160,14 @@ def test_leer_continuo_cuenta_errores_y_sigue():
     muestras = mpu6050.leer_continuo(bus, cfg, mpu6050.ajustes_desde_config(cfg), contador)
     next(muestras)
     assert contador["errores_i2c"] == 1
+
+
+def test_tomar_muestras():
+    bloque = [0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    bus = BusFalso(bloque=bloque)
+    cfg = cargar_config("imu")
+    muestras = mpu6050.leer_continuo(bus, cfg, mpu6050.ajustes_desde_config(cfg), {"errores_i2c": 0})
+    t, w, a = mpu6050.tomar_muestras(muestras, 10)
+    assert t.shape == (10,) and w.shape == (10, 3) and a.shape == (10, 3)
+    assert a[:, 2] == pytest.approx([9.80665] * 10)

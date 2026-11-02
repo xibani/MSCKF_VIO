@@ -12,6 +12,8 @@ Este módulo NO abre el bus I2C: todas las funciones reciben un objeto `bus`
 import math
 import time
 
+import numpy as np
+
 from captura.reloj import ahora_ns
 
 # ---------------------------------------------------------------------
@@ -202,3 +204,17 @@ def leer_continuo(bus, cfg, ajustes, contador):
             continue
         w, a, temp = convertir_bloque(bloque, ajustes["escala_acc"], ajustes["escala_gir"])
         yield t_ns, w, a, temp
+
+
+def tomar_muestras(muestras, n):
+    """Saca n muestras del generador leer_continuo.
+
+    Devuelve: (t_ns (n,) int64, w (n, 3) [rad/s], a (n, 3) [m/s²]).
+    """
+    t, w, a = [], [], []
+    for _ in range(n):
+        t_ns, w_k, a_k, _ = next(muestras)
+        t.append(t_ns)
+        w.append(w_k)
+        a.append(a_k)
+    return np.array(t, dtype=np.int64), np.array(w), np.array(a)
