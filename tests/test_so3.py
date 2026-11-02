@@ -90,3 +90,44 @@ def test_exp_angulo_pequeno():
     R = so3.exp_so3(phi)
     assert so3.es_rotacion(R)
     assert R == pytest.approx(np.eye(3) + so3.hat(phi), abs=1e-15)
+
+
+# =====================================================================
+# Paso 4.3
+# =====================================================================
+def test_log_invierte_a_exp():
+    for phi in vectores_aleatorios(1000, np.pi - 0.01):
+        assert so3.log_so3(so3.exp_so3(phi)) == pytest.approx(phi, abs=TOL)
+
+
+def test_log_igual_que_scipy():
+    for phi in vectores_aleatorios(1000, np.pi - 0.01, semilla=3):
+        R = so3.exp_so3(phi)
+        assert so3.log_so3(R) == pytest.approx(Rotation.from_matrix(R).as_rotvec(), abs=TOL)
+
+
+@pytest.mark.parametrize("angulo", [1e-12, 1e-9, 1e-7, 1e-5])
+def test_log_angulos_pequenos(angulo):
+    phi = angulo * np.array([2.0, -1.0, 2.0]) / 3.0
+    assert so3.log_so3(so3.exp_so3(phi)) == pytest.approx(phi, rel=1e-6, abs=1e-20)
+
+
+@pytest.mark.parametrize("distancia_a_pi", [1e-2, 1e-4, 1e-7, 1e-10, 0.0])
+def test_log_cerca_de_pi(distancia_a_pi):
+    eje = np.array([0.6, -0.8, 0.0])
+    theta = np.pi - distancia_a_pi
+    R = so3.exp_so3(theta * eje)
+    phi = so3.log_so3(R)
+    assert np.linalg.norm(phi) == pytest.approx(theta, abs=1e-7)
+    # En pi exacto, +eje y -eje dan la misma rotación: se comprueba la rotación
+    assert so3.exp_so3(phi) == pytest.approx(R, abs=1e-7)
+
+
+def test_log_de_angulos_mayores_que_pi():
+    # Un giro de 4 rad es el mismo que uno de 4 - 2·pi (≈ -2.28 rad) sobre el mismo eje
+    eje = np.array([0.0, 0.0, 1.0])
+    R = so3.exp_so3(4.0 * eje)
+    phi = so3.log_so3(R)
+    assert np.linalg.norm(phi) <= np.pi
+    assert phi == pytest.approx((4.0 - 2 * np.pi) * eje, abs=TOL)
+    assert so3.exp_so3(phi) == pytest.approx(R, abs=TOL)

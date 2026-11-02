@@ -77,3 +77,42 @@ def exp_so3(phi):
         B = (1.0 - np.cos(theta)) / theta ** 2
 
     return np.eye(3) + A * Phi + B * Phi2
+
+
+# =====================================================================
+# Paso 4.3 — Logaritmo: de matriz a vector de rotación
+# =====================================================================
+def log_so3(R):
+    """Vector de rotación de la matriz R (inversa de exp_so3).
+
+    R: array (3, 3), matriz de rotación.
+    Devuelve: array (3,) con longitud entre 0 y pi [rad].
+    """
+    R = np.asarray(R, dtype=float)
+
+    # 1. Ángulo, a partir de su coseno y su seno:
+    #    cos(t) = (traza(R) - 1) / 2       sen(t) = |vee(R - R^T)| / 2
+    #    atan2 da el ángulo con precisión en todo el rango [0, pi]
+    w = vee(R - R.T) / 2.0               # = sen(t) * eje
+    cos_t = (np.trace(R) - 1.0) / 2.0
+    sen_t = np.linalg.norm(w)
+    theta = np.arctan2(sen_t, cos_t)
+
+    # 2. Ángulo pequeño: theta / sen(theta) ~ 1 + theta^2 / 6
+    if theta < UMBRAL_ANGULO_PEQUENO:
+        return w * (1.0 + theta ** 2 / 6.0)
+
+    # 3. Caso general: phi = theta * eje = theta / sen(theta) * w
+    if theta < np.pi - UMBRAL_CERCA_DE_PI:
+        return w * (theta / sen_t)
+
+    # 4. Cerca de pi, sen(theta) ~ 0 y w no sirve para hallar el eje.
+    #    Se usa la parte simétrica: (R + R^T)/2 = I + (1 - cos t)(u u^T - I)
+    #    =>  u u^T = I + ((R + R^T)/2 - I) / (1 - cos t)
+    uuT = np.eye(3) + ((R + R.T) / 2.0 - np.eye(3)) / (1.0 - cos_t)
+    k = int(np.argmax(np.diag(uuT)))     # la componente más grande del eje: la más precisa
+    u = uuT[:, k] / np.sqrt(uuT[k, k])
+    # El signo del eje lo fija w (= sen(t) * u, con sen(t) >= 0)
+    if np.dot(u, w) < 0:
+        u = -u
+    return theta * u
