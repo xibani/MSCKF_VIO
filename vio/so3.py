@@ -138,3 +138,17 @@ def reortonormalizar(R):
 def angulo_entre(R_a, R_b):
     """Ángulo [rad] de la rotación que lleva de R_a a R_b. 0 = iguales."""
     return float(np.linalg.norm(log_so3(R_a.T @ R_b)))
+
+
+def angulos_zyx(R):
+    """Ángulos (alabeo, cabeceo, guiñada) de R, en rad, convención Z-Y-X.
+
+    R = Rz(guiñada) @ Ry(cabeceo) @ Rx(alabeo). En inglés: roll, pitch, yaw.
+    SOLO para mostrar resultados: los ángulos de Euler tienen una
+    singularidad en cabeceo = ±90° y nunca se usan para calcular.
+    Devuelve: (alabeo, cabeceo, guinada) en rad.
+    """
+    alabeo = np.arctan2(R[2, 1], R[2, 2])
+    cabeceo = -np.arcsin(np.clip(R[2, 0], -1.0, 1.0))
+    guinada = np.arctan2(R[1, 0], R[0, 0])
+    return alabeo, cabeceo, guinada

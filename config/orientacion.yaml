@@ -1,0 +1,20 @@
+# config/orientacion.yaml — Etapa 5: orientación solo con el giroscopio, Pi -> PC
+
+inicializacion:
+  t_reposo_s: 2.0             # segundos quieto al arrancar para estimar sesgo e inclinación
+  sigma_gir_max_dps: 0.5      # si la desviación del giroscopio supera esto, se movió: repetir
+  error_norma_acc_max: 1.0    # | |a_media| - g | máximo [m/s²]; el chip trae desvíos de fábrica
+
+integracion:
+  reortonormalizar_cada: 200  # muestras entre reortonormalizaciones de R (1 s a 200 Hz)
+  dt_max_s: 0.05              # un Δt mayor cuenta como hueco (se integra igual, pero se avisa)
+
+red:
+  ip_pc: 192.168.1.100        # IP del PC en la red local (en Windows: ipconfig)
+  puerto: 5005                # puerto UDP
+  frecuencia_envio_hz: 30     # se integra a 200 Hz, se envía a esta frecuencia
+
+visor:
+  intervalo_refresco_ms: 50   # cada cuánto se redibuja
+  timeout_sin_datos_s: 1.0    # sin paquetes durante más de esto: "SIN DATOS"
+  semiejes_caja: [1.0, 0.6, 0.12]   # medidas del dibujo de la placa (x, y, z), sin unidades

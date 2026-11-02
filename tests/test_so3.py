@@ -152,3 +152,12 @@ def test_angulo_entre():
     R_b = so3.exp_so3(0.5 * eje)
     assert so3.angulo_entre(R_a, R_b) == pytest.approx(0.3)
     assert so3.angulo_entre(R_a, R_a) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_angulos_zyx_igual_que_scipy():
+    rng = np.random.default_rng(5)
+    for _ in range(500):
+        alabeo, guinada = rng.uniform(-np.pi, np.pi, 2)
+        cabeceo = rng.uniform(-1.5, 1.5)            # lejos de ±90°
+        R = Rotation.from_euler("ZYX", [guinada, cabeceo, alabeo]).as_matrix()
+        assert so3.angulos_zyx(R) == pytest.approx((alabeo, cabeceo, guinada), abs=1e-9)
