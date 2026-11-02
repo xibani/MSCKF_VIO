@@ -1,0 +1,8 @@
+# config/simulador.yaml — Trayectorias simuladas (verdad conocida) para probar los algoritmos
+
+circulo:
+  radio_m: 1.0          # radio del círculo
+  omega_rad_s: 1.0      # velocidad angular: 1 rad/s = una vuelta cada 6,3 s
+  altura_m: 0.0         # altura constante
+  duracion_s: 10.0
+  frecuencia_hz: 200    # frecuencia de la IMU simulada

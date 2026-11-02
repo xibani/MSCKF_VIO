@@ -9,8 +9,7 @@ Origen: donde está la placa al arrancar.
 import numpy as np
 
 from vio import so3
-
-G = 9.80665   # gravedad estándar [m/s²]
+from vio.constantes import G
 
 
 def estimar_reposo(w, a):
