@@ -9,3 +9,5 @@ frecuencia_hz: 200     # muestras por segundo; 1000 / frecuencia_hz debe ser ent
 dlpf_cfg: 3            # filtro paso bajo: 3 = unos 44 Hz (acel.) / 42 Hz (gir.), retardo ~5 ms
 rango_gir_dps: 500     # rango del giroscopio en °/s: 250, 500, 1000 o 2000
 rango_acc_g: 4         # rango del acelerómetro en g: 2, 4, 8 o 16
+
+nucleo_cpu: 3          # núcleo de la CPU reservado al proceso de la IMU (la Pi 4 tiene 0-3)

@@ -1,0 +1,8 @@
+# config/grabacion.yaml — Grabación sincronizada de IMU y cámara
+
+duracion_s: 70               # duración por defecto del tramo de imágenes (la etapa exige ≥ 60 s)
+timeout_imu_s: 15.0          # espera máxima a que el proceso de la IMU esté grabando
+nucleos_principal: [0, 1, 2] # núcleos para la cámara y el guardado (el de la IMU queda libre)
+cola_max_imagenes: 300       # imágenes en espera de guardarse: 15 s a 20 fps
+aviso_cada_s: 1.0            # cada cuánto se imprime el progreso
+brillo_relativo_min: 0.5     # por debajo se avisa de poca luz

@@ -10,3 +10,8 @@ camara:
   perdidas_max: 0                    # imágenes perdidas permitidas
   latencia_max_ms: 500.0             # llegada - sensor por encima de esto: relojes distintos o programa atascado
   exposicion_variacion_max_pct: 1.0  # variación máxima de la exposición entre imágenes
+
+grabacion:
+  duracion_min_s: 60.0     # duración mínima del tramo de imágenes
+  t_reposo_s: 2.0          # segundos iniciales de IMU que deben estar quietos
+  ruido_gir_max_dps: 0.5   # σ del giroscopio en reposo por encima de esto: se movió
