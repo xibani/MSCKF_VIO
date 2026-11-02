@@ -56,3 +56,72 @@ def test_detectar_respeta_los_puntos_existentes():
     assert len(existentes) + len(nuevos) <= d["max_puntos"]
     distancias = np.linalg.norm(nuevos[:, None, :] - existentes[None, :, :], axis=2)
     assert distancias.min() >= d["distancia_min_px"] - 1.0        # -1: el círculo se dibuja en píxeles enteros
+    
+
+# =====================================================================
+# Paso 8.2
+# =====================================================================
+def test_seguir_mide_un_desplazamiento_subpixel():
+    img = textura()
+    p = fe.detectar(img, np.zeros((0, 2)), CFG["deteccion"], MARGEN)
+    p1, validos, _ = fe.seguir(img, desplazar(img, 3.3, -2.6), p, CFG["seguimiento"])
+    assert validos.mean() > 0.9
+    error = p1[validos] - p[validos] - np.array([3.3, -2.6])
+    assert np.median(np.abs(error)) < 0.05                       # mejor que 1/20 de píxel
+
+
+def test_seguir_descarta_los_que_salen_de_la_imagen():
+    img = textura()
+    p = fe.detectar(img, np.zeros((0, 2)), CFG["deteccion"], MARGEN)
+    p1, validos, _ = fe.seguir(img, desplazar(img, 40.0, 0.0), p, CFG["seguimiento"])
+    fuera = p[:, 0] + 40.0 >= 640                # su posición verdadera ya no está en la imagen
+    assert fuera.any()
+    assert not validos[fuera].any()
+    # Ningún punto aceptado puede estar en el margen del borde
+    assert (p1[validos, 0] < 640 - CFG["seguimiento"]["margen_borde_px"]).all()
+
+
+def test_ida_y_vuelta_detecta_una_zona_que_cambia():
+    img = textura()
+    p = fe.detectar(img, np.zeros((0, 2)), CFG["deteccion"], MARGEN)
+    img2 = desplazar(img, 2.0, 1.0)
+    img2[100:300, 200:400] = textura(semilla=7)[100:300, 200:400]   # algo tapa esa zona
+    _, validos, _ = fe.seguir(img, img2, p, CFG["seguimiento"])
+    dentro = (p[:, 0] > 215) & (p[:, 0] < 385) & (p[:, 1] > 115) & (p[:, 1] < 285)
+    fuera = (p[:, 0] < 180) | (p[:, 0] > 420) | (p[:, 1] < 80) | (p[:, 1] > 320)
+    assert validos[dentro].mean() < 0.2
+    assert validos[fuera].mean() > 0.9
+    
+
+# =====================================================================
+# Paso 8.3
+# =====================================================================
+def vistas_sinteticas(n=200, n_malos=40, semilla=0):
+    """Puntos 3D vistos desde dos posiciones de cámara + n_malos correspondencias falsas."""
+    rng = np.random.default_rng(semilla)
+    P = np.column_stack([rng.uniform(-2, 2, n), rng.uniform(-1.5, 1.5, n), rng.uniform(3, 8, n)])
+    R = so3.exp_so3([0.02, -0.05, 0.01])
+    t = np.array([0.3, 0.05, 0.0])                       # la cámara se desplaza 30 cm
+    P2 = (R @ P.T).T + t
+    xy1 = P[:, :2] / P[:, 2:3]
+    xy2 = P2[:, :2] / P2[:, 2:3]
+    malos = rng.choice(n, n_malos, replace=False)
+    xy2[malos] += rng.uniform(-0.05, 0.05, (n_malos, 2))  # entre 0 y ~30 px de error
+    return xy1, xy2, malos
+
+
+def test_rechazo_geometrico_encuentra_los_malos():
+    xy1, xy2, malos = vistas_sinteticas()
+    desplazamiento = np.linalg.norm(xy2 - xy1, axis=1) * K[0, 0]
+    encajan = fe.rechazo_geometrico(xy1, xy2, desplazamiento, CFG["geometria"], K[0, 0])
+    buenos = np.setdiff1d(np.arange(len(xy1)), malos)
+    error_px = np.linalg.norm(xy2[malos] - xy1[malos], axis=1)    # (solo para documentar)
+    assert encajan[buenos].mean() > 0.98                          # casi ningún bueno rechazado
+    assert (~encajan[malos]).mean() > 0.9                         # casi todos los malos fuera
+    assert error_px.max() > 0
+
+
+def test_rechazo_geometrico_no_actua_sin_movimiento():
+    xy1, xy2, _ = vistas_sinteticas()
+    poco = np.full(len(xy1), 0.3)                                 # mediana < paralaje_min_px
+    assert fe.rechazo_geometrico(xy1, xy2, poco, CFG["geometria"], K[0, 0]).all()

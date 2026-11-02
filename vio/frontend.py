@@ -112,3 +112,29 @@ def seguir(gris_ant, gris_act, puntos, cfg_seg):
     validos = ((estado_ida.ravel() == 1) & (estado_vuelta.ravel() == 1) &
                (error_ida_vuelta < cfg_seg["ida_vuelta_max_px"]) & dentro)
     return p1, validos, error_ida_vuelta
+
+
+# =====================================================================
+# Paso 8.3 — Rechazo geométrico con la matriz esencial y RANSAC
+# =====================================================================
+def rechazo_geometrico(xy_ant, xy_act, desplazamiento_px, cfg_geo, focal_px):
+    """¿Qué correspondencias encajan con un único movimiento rígido de la cámara?
+
+    xy_ant, xy_act: arrays (N, 2) en coordenadas normalizadas sin distorsión.
+    desplazamiento_px: (N,) cuánto se ha movido cada punto en la imagen [px].
+    focal_px: focal en píxeles, para pasar el umbral de px a coordenadas normalizadas.
+    Devuelve: array (N,) bool, True = encaja (inlier).
+    """
+    n = len(xy_ant)
+    # Con pocos puntos o casi sin movimiento, la matriz esencial no está bien definida
+    if n < cfg_geo["puntos_min"] or np.median(desplazamiento_px) < cfg_geo["paralaje_min_px"]:
+        return np.ones(n, dtype=bool)
+
+    _, mascara = cv2.findEssentialMat(
+        xy_ant.astype(np.float64), xy_act.astype(np.float64),
+        focal=1.0, pp=(0.0, 0.0),                      # ya están normalizadas: K = identidad
+        method=cv2.RANSAC, prob=cfg_geo["confianza"],
+        threshold=cfg_geo["umbral_px"] / focal_px)     # 1 px expresado sin unidades
+    if mascara is None:
+        return np.ones(n, dtype=bool)
+    return mascara.ravel().astype(bool)
