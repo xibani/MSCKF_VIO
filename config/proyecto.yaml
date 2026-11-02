@@ -1,0 +1,3 @@
+nombre: VIO-Pi
+version: "0.1.0"          # entre comillas: es texto, no un número
+carpeta_datos: datos      # relativa a la raíz del proyecto

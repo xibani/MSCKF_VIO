@@ -1,0 +1,11 @@
+# config/imu.yaml — IMU MPU-6050
+# Los valores van en unidades físicas; captura/mpu6050.py los traduce a bytes de registro.
+
+bus_i2c: 1             # /dev/i2c-1 (pines GPIO2 = SDA, GPIO3 = SCL)
+direccion: 0x68        # dirección I2C del chip (pin AD0 a masa)
+who_am_i: 0x68         # lo que debe responder el registro WHO_AM_I
+
+frecuencia_hz: 200     # muestras por segundo; 1000 / frecuencia_hz debe ser entero
+dlpf_cfg: 3            # filtro paso bajo: 3 = unos 44 Hz (acel.) / 42 Hz (gir.), retardo ~5 ms
+rango_gir_dps: 500     # rango del giroscopio en °/s: 250, 500, 1000 o 2000
+rango_acc_g: 4         # rango del acelerómetro en g: 2, 4, 8 o 16

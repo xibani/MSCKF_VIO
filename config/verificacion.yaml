@@ -1,0 +1,7 @@
+# config/verificacion.yaml — Umbrales para dar por buena una grabación
+
+factor_hueco: 1.5        # un Δt mayor que 1.5 periodos nominales cuenta como hueco
+
+imu:
+  perdidas_max_pct: 0.1  # porcentaje máximo de muestras perdidas
+  jitter_max_ms: 0.5     # desviación típica máxima de Δt
