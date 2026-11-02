@@ -138,3 +138,107 @@ def rechazo_geometrico(xy_ant, xy_act, desplazamiento_px, cfg_geo, focal_px):
     if mascara is None:
         return np.ones(n, dtype=bool)
     return mascara.ravel().astype(bool)
+
+
+# =====================================================================
+# Paso 8.4 — Pistas y el front-end completo
+# =====================================================================
+@dataclass
+class Pista:
+    """Historia de un punto: en qué imágenes se vio y dónde."""
+    id: int
+    imagenes: list = field(default_factory=list)   # índice de cada imagen
+    t_ns: list = field(default_factory=list)       # instante de cada imagen [ns]
+    uv: list = field(default_factory=list)         # posición en píxeles, (u, v)
+    xy: list = field(default_factory=list)         # coordenadas normalizadas sin distorsión
+
+    def anadir(self, imagen, t_ns, uv, xy):
+        self.imagenes.append(imagen)
+        self.t_ns.append(t_ns)
+        self.uv.append((float(uv[0]), float(uv[1])))
+        self.xy.append((float(xy[0]), float(xy[1])))
+
+    def longitud(self):
+        """Número de imágenes en las que se ha visto."""
+        return len(self.imagenes)
+
+
+class FrontEnd:
+    """Recibe imágenes una a una y entrega las pistas que terminan."""
+
+    def __init__(self, K, dist, cfg):
+        """K (3, 3), dist (5,): intrínsecos. cfg: dict de config/frontend.yaml."""
+        self.K = K
+        self.dist = dist
+        self.cfg = cfg
+        self.gris_ant = None
+        self.puntos = np.zeros((0, 2), np.float32)   # posición actual de cada punto seguido
+        self.ids = np.zeros(0, dtype=int)            # id de la pista de cada punto
+        self.activas = {}                            # id -> Pista
+        self.siguiente_id = 0
+        self.n_imagenes = 0
+
+    def procesar(self, gris, t_ns):
+        """Procesa una imagen. Devuelve: dict con
+            terminadas: lista de Pista que acaban en la imagen anterior
+            estadisticas: dict con los recuentos de esta imagen
+        """
+        indice = self.n_imagenes
+        terminadas = []
+        est = {"seguidos": 0, "perdidos_klt": 0, "rechazados_ransac": 0, "nuevos": 0}
+
+        # --- 1-3. Seguir los puntos existentes y filtrar ---
+        if self.gris_ant is not None and len(self.puntos) > 0:
+            puntos_act, validos, _ = seguir(self.gris_ant, gris, self.puntos, self.cfg["seguimiento"])
+            est["perdidos_klt"] = int((~validos).sum())
+
+            idx = np.flatnonzero(validos)
+            if len(idx) > 0:
+                xy_ant = mc.normalizar(self.puntos[idx], self.K, self.dist)
+                xy_act = mc.normalizar(puntos_act[idx], self.K, self.dist)
+                desplazamiento = np.linalg.norm(puntos_act[idx] - self.puntos[idx], axis=1)
+                encajan = rechazo_geometrico(xy_ant, xy_act, desplazamiento,
+                                             self.cfg["geometria"], self.K[0, 0])
+                validos[idx[~encajan]] = False
+                est["rechazados_ransac"] = int((~encajan).sum())
+
+            # --- 4. Terminar las pistas de los puntos perdidos ---
+            for k in np.flatnonzero(~validos):
+                terminadas.append(self.activas.pop(int(self.ids[k])))
+
+            # Los supervivientes se quedan con su nueva posición y una observación más
+            self.puntos = puntos_act[validos]
+            self.ids = self.ids[validos]
+            xy = mc.normalizar(self.puntos, self.K, self.dist) if len(self.puntos) else []
+            for k in range(len(self.puntos)):
+                self.activas[int(self.ids[k])].anadir(indice, t_ns, self.puntos[k], xy[k])
+            est["seguidos"] = len(self.puntos)
+
+        # --- 5. Puntos nuevos donde haya hueco ---
+        nuevos = detectar(gris, self.puntos, self.cfg["deteccion"],
+                          self.cfg["seguimiento"]["margen_borde_px"])
+        if len(nuevos) > 0:
+            xy_nuevos = mc.normalizar(nuevos, self.K, self.dist)
+            ids_nuevos = []
+            for k in range(len(nuevos)):
+                pista = Pista(id=self.siguiente_id)
+                pista.anadir(indice, t_ns, nuevos[k], xy_nuevos[k])
+                self.activas[pista.id] = pista
+                ids_nuevos.append(pista.id)
+                self.siguiente_id += 1
+            self.puntos = np.vstack([self.puntos, nuevos])
+            self.ids = np.concatenate([self.ids, np.array(ids_nuevos, dtype=int)])
+        est["nuevos"] = len(nuevos)
+        est["activos"] = len(self.puntos)
+
+        self.gris_ant = gris
+        self.n_imagenes += 1
+        return {"terminadas": terminadas, "estadisticas": est}
+
+    def terminar_todas(self):
+        """Al acabar la secuencia: entrega todas las pistas que seguían activas."""
+        restantes = list(self.activas.values())
+        self.activas = {}
+        self.puntos = np.zeros((0, 2), np.float32)
+        self.ids = np.zeros(0, dtype=int)
+        return restantes

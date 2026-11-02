@@ -125,3 +125,44 @@ def test_rechazo_geometrico_no_actua_sin_movimiento():
     xy1, xy2, _ = vistas_sinteticas()
     poco = np.full(len(xy1), 0.3)                                 # mediana < paralaje_min_px
     assert fe.rechazo_geometrico(xy1, xy2, poco, CFG["geometria"], K[0, 0]).all()
+    
+
+# =====================================================================
+# Paso 8.4
+# =====================================================================
+def test_pista():
+    p = fe.Pista(id=7)
+    p.anadir(0, 100, (10.0, 20.0), (0.1, 0.2))
+    p.anadir(1, 150, (11.0, 20.5), (0.11, 0.205))
+    assert p.longitud() == 2 and p.imagenes == [0, 1] and p.uv[1] == (11.0, 20.5)
+
+
+def test_frontend_sobre_una_secuencia():
+    # Una textura grande vista por una "ventana" que se mueve 2 px a la derecha por imagen:
+    # el contenido se desplaza 2 px a la izquierda en cada imagen
+    grande = textura(480, 640 + 2 * 40, semilla=3)
+    frontend = fe.FrontEnd(K, DIST, CFG)
+    terminadas = []
+    for k in range(40):
+        imagen = np.ascontiguousarray(grande[:, 2 * k: 2 * k + 640])
+        r = frontend.procesar(imagen, t_ns=k * 50_000_000)
+        terminadas += r["terminadas"]
+        assert r["estadisticas"]["activos"] <= CFG["deteccion"]["max_puntos"]
+
+    activas = list(frontend.activas.values())
+    assert max(p.longitud() for p in activas) == 40              # puntos seguidos de principio a fin
+    # Cada observación de cada pista se mueve exactamente (-2, 0) respecto a la anterior
+    for pista in activas + terminadas:
+        uv = np.array(pista.uv)
+        if len(uv) > 1:
+            assert np.abs(np.diff(uv, axis=0) - [-2.0, 0.0]).max() < 0.1
+    # Los puntos que salen por la izquierda se terminan; los ids no se repiten
+    assert len(terminadas) > 0
+    ids = [p.id for p in activas + terminadas]
+    assert len(ids) == len(set(ids))
+    # Las coordenadas normalizadas son las de los píxeles con K
+    p = activas[0]
+    assert p.xy[0] == pytest.approx(((p.uv[0][0] - 320.0) / 643.0, (p.uv[0][1] - 240.0) / 643.0), abs=1e-9)
+
+    restantes = frontend.terminar_todas()
+    assert len(restantes) == len(activas) and frontend.activas == {}
