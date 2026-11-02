@@ -83,3 +83,75 @@ def controles_manuales(disponibles, exp_us, ganancia, ganancias_color):
         controles["ColourGains"] = (float(ganancias_color[0]), float(ganancias_color[1]))
 
     return controles
+
+
+# =====================================================================
+# Parte 2 — Funciones con la cámara
+# =====================================================================
+def abrir(cfg):
+    """Crea y configura la cámara (sin arrancarla).
+
+    cfg: dict de config/camara.yaml.
+    Devuelve: objeto Picamera2 configurado.
+    """
+    # Se importa aquí y no arriba: así los tests de la parte 1 funcionan
+    # en cualquier ordenador, aunque no tenga picamera2 instalado
+    from picamera2 import Picamera2
+
+    picam2 = Picamera2()
+    periodo = periodo_us(cfg["fps"])
+    configuracion = picam2.create_video_configuration(
+        main={"size": (cfg["ancho"], cfg["alto"]), "format": "YUV420"},
+        sensor={"output_size": (cfg["ancho"], cfg["alto"]), "bit_depth": cfg["profundidad_bits"]},
+        buffer_count=cfg["buffers"],
+        controls={"FrameDurationLimits": (periodo, periodo)},   # mínimo = máximo -> fps fijo
+    )
+    picam2.configure(configuracion)
+    return picam2
+
+
+def fijar_exposicion(picam2, cfg):
+    """Deja converger la exposición automática y la congela.
+
+    La cámara debe estar arrancada (picam2.start()).
+    Devuelve: dict con la exposición y ganancia realmente aplicadas,
+        el brillo relativo y los controles enviados.
+    """
+    # 1. Esperar a que la exposición automática se estabilice
+    time.sleep(cfg["t_ajuste_ae_s"])
+    md = picam2.capture_metadata()
+
+    # 2. Calcular los valores fijos
+    exp_us, ganancia, brillo = exposicion_fija(md["ExposureTime"], md["AnalogueGain"],
+                                               cfg["exposicion_max_us"], cfg["ganancia_max"])
+
+    # 3. Enviarlos a la cámara
+    controles = controles_manuales(picam2.camera_controls, exp_us, ganancia,
+                                   md.get("ColourGains"))
+    picam2.set_controls(controles)
+    time.sleep(cfg["t_aplicar_s"])
+
+    # 4. Leer lo que la cámara ha aplicado de verdad (puede diferir un poco)
+    md = picam2.capture_metadata()
+    return {"exposicion_us": md["ExposureTime"], "ganancia": md["AnalogueGain"],
+            "brillo_relativo": brillo, "controles": controles}
+
+
+def capturar(picam2, cfg):
+    """Espera la siguiente imagen y la devuelve con sus marcas de tiempo.
+
+    Devuelve: (gris, t_sensor_ns, t_llegada_ns, metadatos)
+        gris:         array (alto, ancho) uint8
+        t_sensor_ns:  marca de la cámara (SensorTimestamp) [ns]
+        t_llegada_ns: instante en que el programa recibe la imagen [ns]
+        metadatos:    dict con exposición, ganancia, etc. de ESA imagen
+    """
+    peticion = picam2.capture_request()     # imagen + metadatos de la misma captura
+    t_llegada_ns = ahora_ns()
+    try:
+        yuv = peticion.make_array("main")
+        gris = plano_y(yuv, cfg["ancho"], cfg["alto"])   # copiar ANTES de devolver el búfer
+        md = peticion.get_metadata()
+    finally:
+        peticion.release()                  # devolver el búfer a la cámara, pase lo que pase
+    return gris, md["SensorTimestamp"], t_llegada_ns, md
