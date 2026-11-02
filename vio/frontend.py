@@ -74,3 +74,41 @@ def detectar(gris, puntos_existentes, cfg_det, margen_px):
         ocupacion[celda] += 1
 
     return np.array(nuevos, dtype=np.float32).reshape(-1, 2)
+
+
+# =====================================================================
+# Paso 8.2 — Seguimiento con Lucas-Kanade y comprobación de ida y vuelta
+# =====================================================================
+def seguir(gris_ant, gris_act, puntos, cfg_seg):
+    """Sigue los puntos de la imagen anterior a la actual.
+
+    puntos: array (N, 2) [px] en la imagen anterior.
+    Devuelve: (puntos_act (N, 2), validos (N,) bool, error_ida_vuelta (N,) [px]).
+    """
+    n = len(puntos)
+    if n == 0:
+        return np.zeros((0, 2), np.float32), np.zeros(0, bool), np.zeros(0)
+
+    parametros = dict(
+        winSize=(cfg_seg["ventana_px"], cfg_seg["ventana_px"]),
+        maxLevel=cfg_seg["niveles_piramide"],
+        criteria=(cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS,
+                  cfg_seg["iteraciones"], cfg_seg["epsilon"]))
+    p0 = puntos.reshape(-1, 1, 2).astype(np.float32)
+
+    # 1. Ida: de la imagen anterior a la actual
+    p1, estado_ida, _ = cv2.calcOpticalFlowPyrLK(gris_ant, gris_act, p0, None, **parametros)
+    # 2. Vuelta: de la actual a la anterior, partiendo de lo encontrado
+    p0_vuelta, estado_vuelta, _ = cv2.calcOpticalFlowPyrLK(gris_act, gris_ant, p1, None, **parametros)
+
+    p1 = p1.reshape(-1, 2)
+    error_ida_vuelta = np.linalg.norm(p0_vuelta.reshape(-1, 2) - puntos, axis=1)
+
+    # 3. Válidos: los dos sentidos encontrados, vuelta al mismo sitio y dentro de la imagen
+    alto, ancho = gris_act.shape
+    m = cfg_seg["margen_borde_px"]
+    dentro = ((p1[:, 0] >= m) & (p1[:, 0] < ancho - m) &
+              (p1[:, 1] >= m) & (p1[:, 1] < alto - m))
+    validos = ((estado_ida.ravel() == 1) & (estado_vuelta.ravel() == 1) &
+               (error_ida_vuelta < cfg_seg["ida_vuelta_max_px"]) & dentro)
+    return p1, validos, error_ida_vuelta
