@@ -1,0 +1,14 @@
+# config/camara.yaml — Cámara OV5647 (Raspberry Pi Camera v1)
+
+ancho: 640                # modo 640x480 del sensor: agrupa píxeles y usa todo el campo de visión
+alto: 480
+profundidad_bits: 10      # bits por píxel de ese modo del sensor
+fps: 20                   # imágenes por segundo, fijas
+buffers: 6                # búferes de imagen: margen si el programa se retrasa un momento
+
+t_ajuste_ae_s: 2.0        # tiempo para que la exposición automática converja
+t_aplicar_s: 0.5          # tiempo para que la cámara aplique los valores fijos
+exposicion_max_us: 8000   # límite de exposición: más larga emborrona al moverse
+ganancia_max: 8.0         # límite de ganancia analógica: más ganancia = más ruido
+
+compresion_png: 1         # 0-9; 1 = rápida (el PNG nunca pierde información)
