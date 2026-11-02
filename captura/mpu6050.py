@@ -12,6 +12,8 @@ Este módulo NO abre el bus I2C: todas las funciones reciben un objeto `bus`
 import math
 import time
 
+from captura.reloj import ahora_ns
+
 # ---------------------------------------------------------------------
 # Direcciones de los registros que usamos
 # ---------------------------------------------------------------------
@@ -170,10 +172,6 @@ def leer_bloque(bus, direccion):
 # =====================================================================
 # Paso 1.3 — Lectura continua con marca de tiempo
 # =====================================================================
-def ahora_ns():
-    """Instante actual en ns (int), reloj CLOCK_MONOTONIC: el mismo que usa la cámara."""
-    return time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-
 
 def esperar_muestra(bus, direccion):
     """Pregunta en bucle al chip hasta que tenga una muestra nueva.
