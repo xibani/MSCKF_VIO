@@ -116,3 +116,25 @@ def log_so3(R):
     if np.dot(u, w) < 0:
         u = -u
     return theta * u
+
+
+# =====================================================================
+# Paso 4.4 — Utilidades
+# =====================================================================
+def reortonormalizar(R):
+    """Devuelve la matriz de rotación más cercana a R.
+
+    Tras miles de multiplicaciones, el redondeo hace que R deje de ser una
+    rotación exacta. La SVD (R = U S V^T) da la más cercana: U V^T.
+    """
+    U, S, Vt = np.linalg.svd(R)
+    R_limpia = U @ Vt
+    if np.linalg.det(R_limpia) < 0:      # sería un espejo: invertir el último eje de U
+        U[:, -1] = -U[:, -1]
+        R_limpia = U @ Vt
+    return R_limpia
+
+
+def angulo_entre(R_a, R_b):
+    """Ángulo [rad] de la rotación que lleva de R_a a R_b. 0 = iguales."""
+    return float(np.linalg.norm(log_so3(R_a.T @ R_b)))

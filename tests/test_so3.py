@@ -131,3 +131,24 @@ def test_log_de_angulos_mayores_que_pi():
     assert np.linalg.norm(phi) <= np.pi
     assert phi == pytest.approx((4.0 - 2 * np.pi) * eje, abs=TOL)
     assert so3.exp_so3(phi) == pytest.approx(R, abs=TOL)
+    
+
+# =====================================================================
+# Paso 4.4
+# =====================================================================
+def test_reortonormalizar():
+    rng = np.random.default_rng(4)
+    R = so3.exp_so3([0.3, -0.2, 0.5])
+    R_sucia = R + rng.normal(0.0, 1e-6, (3, 3))     # redondeo acumulado simulado
+    assert not so3.es_rotacion(R_sucia)
+    R_limpia = so3.reortonormalizar(R_sucia)
+    assert so3.es_rotacion(R_limpia)
+    assert R_limpia == pytest.approx(R, abs=1e-5)  # y sigue siendo casi la misma
+
+
+def test_angulo_entre():
+    eje = np.array([1.0, 0.0, 0.0])
+    R_a = so3.exp_so3(0.2 * eje)
+    R_b = so3.exp_so3(0.5 * eje)
+    assert so3.angulo_entre(R_a, R_b) == pytest.approx(0.3)
+    assert so3.angulo_entre(R_a, R_a) == pytest.approx(0.0, abs=1e-12)
