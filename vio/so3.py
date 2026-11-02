@@ -51,3 +51,29 @@ def hat(v):
 def vee(M):
     """Operación inversa de hat: de matriz antisimétrica (3, 3) a vector (3,)."""
     return np.array([M[2, 1], M[0, 2], M[1, 0]])
+
+
+# =====================================================================
+# Paso 4.2 — Exponencial: de vector de rotación a matriz
+# =====================================================================
+def exp_so3(phi):
+    """Matriz de rotación del vector de rotación phi (fórmula de Rodrigues).
+
+    phi: array (3,) [rad]. Dirección = eje de giro; longitud = ángulo.
+    Devuelve: array (3, 3), giro de |phi| radianes alrededor de phi / |phi|.
+    """
+    phi = np.asarray(phi, dtype=float)
+    theta = np.linalg.norm(phi)          # ángulo [rad]
+    Phi = hat(phi)
+    Phi2 = Phi @ Phi
+
+    # Coeficientes A = sen(t)/t y B = (1 - cos(t))/t^2
+    if theta < UMBRAL_ANGULO_PEQUENO:
+        # Desarrollo en serie (evita dividir entre casi 0)
+        A = 1.0 - theta ** 2 / 6.0
+        B = 0.5 - theta ** 2 / 24.0
+    else:
+        A = np.sin(theta) / theta
+        B = (1.0 - np.cos(theta)) / theta ** 2
+
+    return np.eye(3) + A * Phi + B * Phi2
