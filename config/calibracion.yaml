@@ -1,0 +1,21 @@
+# config/calibracion.yaml — Parámetros de los procedimientos de calibración (etapa 7)
+# (Los RESULTADOS se guardan aparte: config/camara_intrinsecos.yaml, config/imu_calibracion.yaml)
+
+tablero:
+  esquinas_x: 9            # esquinas INTERIORES en horizontal (un tablero de 10 x 7 cuadros)
+  esquinas_y: 6            # esquinas interiores en vertical
+  lado_m: 0.025            # lado de un cuadro, MEDIDO con regla sobre el papel impreso [m]
+
+camara:
+  imagenes_objetivo: 30    # imágenes a capturar
+  zonas_cobertura: 3       # la imagen se divide en 3 x 3 zonas para medir la cobertura
+  nitidez_min: 100.0       # varianza del laplaciano por debajo de esto: imagen movida
+  rms_objetivo_px: 0.3     # error de reproyección objetivo
+  rms_max_px: 0.5          # por encima, la calibración no vale
+  factor_descarte: 2.0     # se descartan imágenes con error > factor · mediana
+
+acelerometro:
+  t_asentar_s: 1.0         # tras pulsar Enter, segundos que se descartan (soltar la mano)
+  t_por_posicion_s: 5.0    # segundos quietos en cada una de las 6 posiciones
+  sigma_gir_max_dps: 0.5   # si el giroscopio se mueve más, se repite la posición
+  coseno_min: 0.98         # el eje esperado debe estar a menos de ~11° de la vertical
