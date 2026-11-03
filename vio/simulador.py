@@ -153,3 +153,80 @@ def imu_con_ruido(tr, cfg_imu, frecuencia_hz, rng):
     blanco_a, b_a = ruido_y_sesgo(n, frecuencia_hz, cfg_imu["ruido_acc"],
                                   cfg_imu["paseo_sesgo_acc"], cfg_imu["sesgo_inicial_acc"], rng)
     return w_ideal + b_g + blanco_g, a_ideal + b_a + blanco_a, b_g, b_a
+
+
+# ---------------------------------------------------------------------
+# Paso 11.3 — Mundo, extrínseca y cámara
+# ---------------------------------------------------------------------
+def puntos_habitacion(dimensiones, n_por_superficie, rng):
+    """Puntos al azar en las 4 paredes, el suelo y el techo de una habitación.
+
+    dimensiones: (lx, ly, lz) [m]. La habitación ocupa x en [-lx/2, lx/2],
+    y en [-ly/2, ly/2] y z en [0, lz].
+    Devuelve: array (6·n_por_superficie, 3) [m].
+    """
+    lx, ly, lz = dimensiones
+    n = n_por_superficie
+    superficies = []
+    for x_pared in (-lx / 2, lx / 2):                      # paredes x = constante
+        superficies.append(np.column_stack([np.full(n, x_pared),
+                                            rng.uniform(-ly / 2, ly / 2, n),
+                                            rng.uniform(0.0, lz, n)]))
+    for y_pared in (-ly / 2, ly / 2):                      # paredes y = constante
+        superficies.append(np.column_stack([rng.uniform(-lx / 2, lx / 2, n),
+                                            np.full(n, y_pared),
+                                            rng.uniform(0.0, lz, n)]))
+    for z_plano in (0.0, lz):                              # suelo y techo
+        superficies.append(np.column_stack([rng.uniform(-lx / 2, lx / 2, n),
+                                            rng.uniform(-ly / 2, ly / 2, n),
+                                            np.full(n, z_plano)]))
+    return np.vstack(superficies)
+
+
+def extrinseca(cfg_cam):
+    """T_c_i (IMU -> cámara) a partir del YAML: p_c = R_c_i · p_i + t_c_i.
+
+    El YAML da R_i_c (columnas = ejes de la cámara en ejes de la IMU) y p_i_c (dónde
+    está la cámara en ejes de la IMU). Despejando p_i = R_i_c · p_c + p_i_c:
+        R_c_i = R_i_cᵀ,     t_c_i = -R_c_i · p_i_c
+    """
+    R_i_c = np.array(cfg_cam["R_i_c"], dtype=float)
+    p_i_c = np.array(cfg_cam["p_i_c_m"], dtype=float)
+    R_c_i = R_i_c.T
+    return R_c_i, -R_c_i @ p_i_c
+
+
+def pose_camara(R_w_i, p_w_i, R_c_i, t_c_i):
+    """Pose de la cámara (R_c_w, t_c_w) a partir de la de la IMU y la extrínseca.
+
+    Un punto del mundo en ejes de la IMU: p_i = R_w_iᵀ · (p_w - p_w_i).
+    En ejes de la cámara: p_c = R_c_i · p_i + t_c_i. Agrupando términos:
+        R_c_w = R_c_i · R_w_iᵀ,     t_c_w = t_c_i - R_c_w · p_w_i
+    """
+    R_c_w = R_c_i @ R_w_i.T
+    return R_c_w, t_c_i - R_c_w @ p_w_i
+
+
+def observar_puntos(R_c_w, t_c_w, puntos_w, K, tamano, profundidad_min, ruido_px, rng):
+    """Qué puntos ve la cámara y dónde, con ruido.
+
+    puntos_w: (M, 3). tamano: (ancho, alto) [px].
+    Un punto se ve si está a más de profundidad_min delante de la cámara y su proyección
+    SIN ruido cae dentro de la imagen. Después se añade el ruido en píxeles.
+    Devuelve: (ids (V,), uv (V, 2) [px], xy (V, 2) normalizadas), V = puntos vistos.
+    """
+    ancho, alto = tamano
+    # 1. Todos los puntos a ejes de la cámara (de una vez: cada fila es un punto)
+    p_c = puntos_w @ R_c_w.T + t_c_w
+    delante = p_c[:, 2] > profundidad_min
+    # 2. Proyección a píxeles (solo los de delante, para no dividir por z <= 0)
+    ids = np.flatnonzero(delante)
+    xy = p_c[ids, :2] / p_c[ids, 2:3]
+    u = K[0, 0] * xy[:, 0] + K[0, 2]
+    v = K[1, 1] * xy[:, 1] + K[1, 2]
+    dentro = (u >= 0) & (u < ancho) & (v >= 0) & (v < alto)
+    ids, u, v = ids[dentro], u[dentro], v[dentro]
+    # 3. Ruido en píxeles y vuelta a coordenadas normalizadas
+    uv = np.column_stack([u, v]) + rng.normal(0.0, ruido_px, (len(ids), 2))
+    xy = np.column_stack([(uv[:, 0] - K[0, 2]) / K[0, 0], (uv[:, 1] - K[1, 2]) / K[1, 1]])
+    return ids, uv, xy

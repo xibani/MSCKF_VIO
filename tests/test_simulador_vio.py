@@ -100,3 +100,60 @@ def test_imu_con_ruido():
     assert (w_m - w_ideal - b_g).std() == pytest.approx(imu["ruido_gir"] * np.sqrt(200), rel=0.05)
     assert (a_m - a_ideal - b_a).std() == pytest.approx(imu["ruido_acc"] * np.sqrt(200), rel=0.05)
     assert b_g[0] == pytest.approx(imu["sesgo_inicial_gir"]) and b_a[0] == pytest.approx(imu["sesgo_inicial_acc"])
+
+
+
+# =====================================================================
+# Paso 11.3
+# =====================================================================
+def test_puntos_en_las_paredes():
+    lx, ly, lz = CFG["mundo"]["habitacion_m"]
+    p = sim.puntos_habitacion((lx, ly, lz), 100, np.random.default_rng(3))
+    assert p.shape == (600, 3)
+    # Cada punto está sobre alguna de las 6 superficies...
+    en_superficie = ((np.abs(np.abs(p[:, 0]) - lx / 2) < 1e-12) | (np.abs(np.abs(p[:, 1]) - ly / 2) < 1e-12)
+                     | (np.abs(p[:, 2]) < 1e-12) | (np.abs(p[:, 2] - lz) < 1e-12))
+    assert en_superficie.all()
+    # ...y dentro de la habitación
+    assert (np.abs(p[:, 0]) <= lx / 2).all() and (np.abs(p[:, 1]) <= ly / 2).all()
+    assert (p[:, 2] >= 0).all() and (p[:, 2] <= lz).all()
+
+
+def test_extrinseca_y_pose_camara():
+    R_c_i, t_c_i = sim.extrinseca(CFG["camara"])
+    assert so3.es_rotacion(R_c_i)
+    R_w_i, p_w_i = sim.pose_vio(3.7, TR)
+    R_c_w, t_c_w = sim.pose_camara(R_w_i, p_w_i, R_c_i, t_c_i)
+    # El eje óptico (z de la cámara) apunta hacia el eje x de la IMU
+    assert R_c_w.T[:, 2] == pytest.approx(R_w_i[:, 0], abs=1e-12)
+    # El centro de la cámara está en p_w_i + R_w_i · p_i_c
+    centro = -R_c_w.T @ t_c_w
+    assert centro == pytest.approx(p_w_i + R_w_i @ np.array(CFG["camara"]["p_i_c_m"]), abs=1e-12)
+    # Por los dos caminos (mundo -> IMU -> cámara y mundo -> cámara) sale lo mismo
+    p_w = np.array([2.0, -1.0, 0.5])
+    por_imu = R_c_i @ (R_w_i.T @ (p_w - p_w_i)) + t_c_i
+    assert R_c_w @ p_w + t_c_w == pytest.approx(por_imu, abs=1e-12)
+
+
+def test_observar_puntos():
+    rng = np.random.default_rng(4)
+    puntos = sim.puntos_habitacion(CFG["mundo"]["habitacion_m"], 300, rng)
+    R_c_i, t_c_i = sim.extrinseca(CFG["camara"])
+    R_c_w, t_c_w = sim.pose_camara(*sim.pose_vio(1.0, TR), R_c_i, t_c_i)
+    # Sin ruido: dentro de la imagen, delante, y xy = proyección exacta
+    ids, uv, xy = sim.observar_puntos(R_c_w, t_c_w, puntos, K, TAMANO, 0.2, 0.0, rng)
+    assert len(ids) > 50
+    p_c = puntos[ids] @ R_c_w.T + t_c_w
+    assert (p_c[:, 2] > 0.2).all()
+    assert (uv[:, 0] >= 0).all() and (uv[:, 0] < 640).all() and (uv[:, 1] >= 0).all() and (uv[:, 1] < 480).all()
+    assert xy == pytest.approx(p_c[:, :2] / p_c[:, 2:3], abs=1e-12)
+    # Los no vistos están detrás o fuera de la imagen
+    otros = np.setdiff1d(np.arange(len(puntos)), ids)
+    q = puntos[otros] @ R_c_w.T + t_c_w
+    u = 643.0 * q[:, 0] / q[:, 2] + 320.0
+    v = 643.0 * q[:, 1] / q[:, 2] + 240.0
+    assert ((q[:, 2] <= 0.2) | (u < 0) | (u >= 640) | (v < 0) | (v >= 480)).all()
+    # Con ruido: los mismos puntos, desplazados 1 px de desviación típica
+    ids2, uv2, _ = sim.observar_puntos(R_c_w, t_c_w, puntos, K, TAMANO, 0.2, 1.0, rng)
+    assert (ids2 == ids).all()
+    assert (uv2 - uv).std() == pytest.approx(1.0, rel=0.15)
