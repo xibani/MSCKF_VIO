@@ -185,3 +185,75 @@ def intervalo_nees(dimension, n_sim, confianza):
     gl = dimension * n_sim
     cola = (1.0 - confianza) / 2.0
     return chi2.ppf(cola, gl) / n_sim, chi2.ppf(1.0 - cola, gl) / n_sim
+
+
+# =====================================================================
+# Paso 10.4 — Gráficas
+# =====================================================================
+def main():
+    cfg = cargar_config("kalman_1d")
+    rng = np.random.default_rng(0)
+    n_sim = cfg["consistencia"]["simulaciones"]
+
+    # --- 1. Una simulación, para ver el error real frente a las bandas de ±3 sigma ---
+    sim = simular(cfg, rng)
+    x_est, P_est = ejecutar_filtro(sim, cfg)
+    error = x_est - sim["x"]
+    sigma_p = np.sqrt(P_est[:, 0, 0])
+    sigma_v = np.sqrt(P_est[:, 1, 1])
+    dentro_p = np.mean(np.abs(error[:, 0]) <= 3 * sigma_p)
+    dentro_v = np.mean(np.abs(error[:, 1]) <= 3 * sigma_v)
+
+    # --- 2. NEES medio: con Q correcta y con Q diez veces menor de lo real ---
+    print(f"Calculando el NEES con {n_sim} simulaciones (dos veces)...")
+    nees_bien = nees_medio(cfg, rng, factor_q=1.0)
+    nees_confiado = nees_medio(cfg, rng, factor_q=0.1)
+    inferior, superior = intervalo_nees(2, n_sim, cfg["consistencia"]["confianza"])
+    en_banda = np.mean((nees_bien[1:] >= inferior) & (nees_bien[1:] <= superior))
+
+    print(f"Error dentro de ±3 sigma: posición {dentro_p:.1%}, velocidad {dentro_v:.1%}")
+    print(f"Intervalo del NEES medio ({cfg['consistencia']['confianza']:.0%}): "
+          f"[{inferior:.2f}, {superior:.2f}]")
+    print(f"Q correcta : NEES medio {nees_bien[1:].mean():.2f}, "
+          f"instantes dentro del intervalo {en_banda:.1%}")
+    print(f"Q / 10     : NEES medio {nees_confiado[1:].mean():.2f}  <- filtro demasiado confiado")
+
+    # --- 3. Figura ---
+    t = sim["t_s"]
+    fig, ejes = plt.subplots(2, 2, figsize=(14, 9))
+    ax = ejes[0, 0]
+    ax.plot(t, sim["x"][:, 0], "k", lw=1, label="verdad")
+    ax.plot(t[sim["con_medida"]], sim["z"][sim["con_medida"]], ".", ms=3, label="medidas z")
+    ax.plot(t, x_est[:, 0], lw=1, label="filtro")
+    ax.set_xlabel("t [s]")
+    ax.set_ylabel("posición [m]")
+    ax.set_title("Posición")
+    ax.legend()
+
+    for ax, col, sigma, nombre, unidad in ((ejes[0, 1], 0, sigma_p, "posición", "m"),
+                                           (ejes[1, 0], 1, sigma_v, "velocidad", "m/s")):
+        ax.fill_between(t, -3 * sigma, 3 * sigma, color="0.85", label="±3 sigma (de P)")
+        ax.plot(t, error[:, col], lw=0.8, label="error real")
+        ax.set_xlabel("t [s]")
+        ax.set_ylabel(f"error de {nombre} [{unidad}]")
+        ax.set_title(f"Error de {nombre}")
+        ax.legend()
+
+    ax = ejes[1, 1]
+    ax.axhspan(inferior, superior, color="0.85", label=f"intervalo {cfg['consistencia']['confianza']:.0%}")
+    ax.plot(t, nees_bien, lw=0.8, label="Q correcta")
+    ax.plot(t, nees_confiado, lw=0.8, label="Q / 10")
+    ax.set_yscale("log")
+    ax.set_xlabel("t [s]")
+    ax.set_ylabel("NEES medio")
+    ax.set_title(f"Consistencia ({n_sim} simulaciones; ideal = 2)")
+    ax.legend()
+    fig.tight_layout()
+
+    ruta = RAIZ_PROYECTO / cargar_config("proyecto")["carpeta_datos"] / "kalman_1d.png"
+    fig.savefig(ruta, dpi=100)
+    print(f"Figura: {ruta}")
+
+
+if __name__ == "__main__":
+    main()
