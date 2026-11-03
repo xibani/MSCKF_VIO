@@ -413,6 +413,17 @@ class Msckf:
             dx, self.P = correccion_kalman(self.P, H, r, self.sigma2)
             self._inyectar(dx)
 
+    def corregir_reposo(self, sigma_v):
+        """Etapa 13 — ZUPT (zero-velocity update): si se sabe que está quieto, se usa como
+        medida "v = 0" con desviación típica sigma_v [m/s]. Sin ella, en reposo no hay
+        paralaje, ninguna pista se puede triangular y el filtro deriva solo con la IMU.
+        """
+        H = np.zeros((3, len(self.P)))
+        H[:, V] = np.eye(3)                            # la medida es la velocidad
+        r = np.zeros(3) - self.estado.v_w              # medida (0) - predicción (v)
+        dx, self.P = correccion_kalman(self.P, H, r, sigma_v ** 2)
+        self._inyectar(dx)
+
     def procesar_imagen(self, t_ns, ids, xy):
         """Una imagen nueva con las observaciones de los puntos seguidos.
 

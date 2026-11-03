@@ -1,0 +1,12 @@
+# config/camara_imu.yaml — Extrínseca cámara-IMU (T_c_i) y desfase temporal (t_d).
+# PROVISIONAL: cámara mirando hacia el eje x de la IMU, 3 cm por delante y 1 cm por encima,
+# y sin desfase. SUSTITUIR por el resultado de Kalibr (etapa 7.4).
+# Columnas de R_i_c = ejes x, y, z de la cámara expresados en ejes de la IMU.
+R_i_c:
+  - [0.0, 0.0, 1.0]
+  - [-1.0, 0.0, 0.0]
+  - [0.0, -1.0, 0.0]
+p_i_c_m: [0.03, 0.0, 0.01]   # posición de la cámara en ejes de la IMU [m]
+t_d_ns: 0                    # t_cámara_corregido = t_cámara + t_d  [ns]
+info:
+  provisional: true

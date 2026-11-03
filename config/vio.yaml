@@ -1,0 +1,17 @@
+# config/vio.yaml — Etapa 13: el VIO completo, en vivo en la Pi o sobre una grabación
+
+inicializacion:
+  t_reposo_s: 2.0             # segundos QUIETO al arrancar: sesgo del giroscopio e inclinación
+  sigma_gir_max_dps: 0.5      # si el giroscopio varía más, se movió: se vuelve a intentar
+  error_norma_acc_max: 1.0    # | |a_media| - g | máximo [m/s²]
+
+reposo:                       # ZUPT: si los puntos no se mueven, la velocidad es 0
+  desplazamiento_max_px: 0.3  # mediana del movimiento de los puntos entre dos imágenes
+  puntos_min: 10              # con menos puntos seguidos no se decide
+  sigma_velocidad_m_s: 0.01   # confianza en "v = 0"
+
+ejecucion:
+  aviso_cada_s: 1.0           # cada cuánto se imprime el estado
+  presupuesto_ms: 50.0        # tiempo disponible por imagen a 20 fps
+  cola_imu_max: 4000          # muestras de IMU en espera entre los dos procesos (20 s a 200 Hz)
+  timeout_imu_s: 15.0         # espera máxima a que arranque el proceso de la IMU

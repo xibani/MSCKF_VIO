@@ -237,8 +237,11 @@ def observar_puntos(R_c_w, t_c_w, puntos_w, K, tamano, profundidad_min, ruido_px
 # ---------------------------------------------------------------------
 # Paso 11.4 — Secuencia completa y pistas
 # ---------------------------------------------------------------------
-def generar_secuencia(cfg_vio, K, tamano, rng):
+def generar_secuencia(cfg_vio, K, tamano, rng, pose=None):
     """Una secuencia VIO simulada completa, con verdad.
+
+    cfg_vio: sección "vio" de config/simulador.yaml. K, tamano: intrínsecos de la cámara.
+    pose: función t [s] -> (R_w_i, p_w) de la trayectoria; por defecto, pose_vio (etapa 13).
 
     cfg_vio: sección "vio" de config/simulador.yaml. K, tamano: intrínsecos de la cámara.
     Devuelve: dict con
@@ -254,8 +257,11 @@ def generar_secuencia(cfg_vio, K, tamano, rng):
         raise ValueError("La frecuencia de la IMU debe ser múltiplo de la de la cámara")
 
     # 1. Trayectoria verdadera e IMU
+    if pose is None:
+        def pose(t):
+            return pose_vio(t, tr_cfg)
     t_ns = tiempos_ns(tr_cfg["duracion_s"], f_imu)
-    tr = imu_ideal(lambda t: pose_vio(t, tr_cfg), t_ns / 1e9, tr_cfg["paso_derivadas_s"])
+    tr = imu_ideal(pose, t_ns / 1e9, tr_cfg["paso_derivadas_s"])
     w_m, a_m, b_g, b_a = imu_con_ruido(tr, imu_cfg, f_imu, rng)
 
     # 2. Mundo y extrínseca
@@ -313,3 +319,51 @@ def pistas_desde_observaciones(obs):
                 punto_de_pista[pista.id] = int(id_punto)
             pista.anadir(int(obs["imagen"][f]), int(obs["t_ns"][f]), obs["uv"][f], obs["xy"][f])
     return pistas, punto_de_pista
+
+
+
+# =====================================================================
+# Etapa 13 — Grabación sintética: reposo inicial e imágenes
+# =====================================================================
+def tiempo_con_reposo(t_s, t_reposo_s, t_rampa_s):
+    """Tiempo "de trayectoria" tau(t) con un reposo inicial y un arranque suave.
+
+    Quieto (tau = 0) hasta t_reposo_s; después la velocidad crece de 0 a 1 durante
+    t_rampa_s con la curva suave 3u² - 2u³ (u de 0 a 1), y a partir de ahí tau avanza
+    como el tiempo. Integrando la curva:  tau = t_rampa·(u³ - u⁴/2)  durante la rampa.
+    Así la posición, la velocidad y la aceleración son continuas: la IMU no ve saltos.
+    """
+    if t_s <= t_reposo_s:
+        return 0.0
+    if t_s <= t_reposo_s + t_rampa_s:
+        u = (t_s - t_reposo_s) / t_rampa_s
+        return t_rampa_s * (u ** 3 - u ** 4 / 2)
+    return t_rampa_s / 2 + (t_s - t_reposo_s - t_rampa_s)
+
+
+def pose_con_reposo(t_s, cfg_tr, t_reposo_s, t_rampa_s):
+    """La trayectoria de pose_vio, pero quieta al principio (para inicializar en reposo)."""
+    return pose_vio(tiempo_con_reposo(t_s, t_reposo_s, t_rampa_s), cfg_tr)
+
+
+def renderizar(uv, tamano, sigma_px, brillo):
+    """Imagen sintética: una mancha gaussiana por cada punto visto, sobre fondo negro.
+
+    uv: (V, 2) posiciones [px] (con decimales). tamano: (ancho, alto).
+    sigma_px: radio de cada mancha. brillo: intensidad del centro (0-255).
+    FAST ve cada mancha como una esquina, y Lucas-Kanade la sigue con precisión subpíxel.
+    Devuelve: array (alto, ancho) uint8.
+    """
+    ancho, alto = tamano
+    imagen = np.zeros((alto, ancho))
+    radio = int(np.ceil(3 * sigma_px))
+    for u, v in uv:
+        # Solo el cuadrado alrededor de la mancha: más allá de 3 sigma vale casi 0
+        u0, v0 = int(round(u)), int(round(v))
+        us = np.arange(max(u0 - radio, 0), min(u0 + radio + 1, ancho))
+        vs = np.arange(max(v0 - radio, 0), min(v0 + radio + 1, alto))
+        if len(us) == 0 or len(vs) == 0:
+            continue
+        du, dv = np.meshgrid(us - u, vs - v)
+        imagen[vs[0]:vs[-1] + 1, us[0]:us[-1] + 1] += brillo * np.exp(-(du ** 2 + dv ** 2) / (2 * sigma_px ** 2))
+    return np.clip(imagen, 0, 255).astype(np.uint8)
