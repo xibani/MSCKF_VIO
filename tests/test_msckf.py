@@ -237,3 +237,104 @@ def test_prueba_chi2():
     # Un residuo con un error grosero no pasa
     malo = L @ rng.normal(0.0, 1.0, 9) + 2.0
     assert not ms.prueba_chi2(H0, malo, P, 0.01, 0.95)[0]
+
+
+
+# =====================================================================
+# Paso 12.4
+# =====================================================================
+def test_propagar_hasta_parte_el_paso():
+    # Sin giro y con medidas constantes, partir un paso en dos da lo mismo que el paso entero
+    # (con giro solo casi: cada medio paso usa la orientación de su propia mitad)
+    e = estado_ejemplo()
+    w_m, a_m = e.b_g.copy(), np.array([1.0, 0.5, 9.5])     # w_m - b_g = 0: sin giro
+    P0 = covarianza_al_azar(15, 10) * 1e-3
+    args = (np.eye(3), np.zeros(3), 643.0, CFG, cargar_config("triangulacion"))
+    entero = ms.Msckf(e, P0, 0, w_m, a_m, *args)
+    entero.anadir_imu(10_000_000, w_m, a_m)
+    partido = ms.Msckf(e, P0, 0, w_m, a_m, *args)
+    partido.propagar_hasta(4_000_000)                       # una imagen a los 4 ms
+    partido.anadir_imu(10_000_000, w_m, a_m)
+    assert partido.t_ns == entero.t_ns == 10_000_000
+    assert ms.diferencia_imu(partido.estado, entero.estado) == pytest.approx(np.zeros(15), abs=1e-12)
+    assert partido.P == pytest.approx(entero.P, rel=1e-4)      # Phi se corta en dt²: difiere en dt³
+
+
+@pytest.fixture(scope="module")
+def simulacion():
+    """Una secuencia de 5 s, el MSCKF sobre ella y la IMU sola, con el mismo arranque."""
+    from vio.propagacion import propagar_secuencia
+    cfg_sim = copy.deepcopy(CFG_SIM)
+    cfg_sim["trayectoria"]["duracion_s"] = 5.0
+    cfg_sim["mundo"]["puntos_por_superficie"] = 150           # menos puntos: test más rápido
+    rng = np.random.default_rng(11)
+    s = sim.generar_secuencia(cfg_sim, K, (640, 480), rng)
+    v = s["verdad"]
+
+    # Arranque con un error inicial sorteado con P0 (como en la etapa 10)
+    P0 = ms.covarianza_inicial(CFG["inicial"])
+    verdad_0 = EstadoImu(v["R_w_i"][0], v["v_w"][0], v["p_w"][0], v["b_g"][0], v["b_a"][0])
+    error_0 = np.linalg.cholesky(P0) @ rng.normal(0.0, 1.0, 15)
+    inicial = ms.inyectar_imu(verdad_0, -error_0)
+
+    filtro = ms.Msckf(inicial, P0, s["imu"]["t_ns"][0], s["imu"]["w"][0], s["imu"]["a"][0],
+                      s["R_c_i"], s["t_c_i"], K[0, 0], CFG, cargar_config("triangulacion"))
+    res = ms.ejecutar_secuencia(filtro, s["imu"], s["obs"], s["camaras"]["t_ns"])
+    solo_imu = propagar_secuencia(inicial, s["imu"]["t_ns"], s["imu"]["w"], s["imu"]["a"],
+                                  cargar_config("orientacion")["integracion"])
+
+    # Error real en cada imagen
+    errores = []
+    for j, k in enumerate(s["camaras"]["indice_imu"]):
+        verdad = EstadoImu(v["R_w_i"][k], v["v_w"][k], v["p_w"][k], v["b_g"][k], v["b_a"][k])
+        errores.append(ms.diferencia_imu(verdad, res["estados"][j]))
+    return {"s": s, "filtro": filtro, "res": res, "solo_imu": solo_imu,
+            "errores": np.array(errores), "error_0": error_0}
+
+
+def test_msckf_corrige_la_deriva_de_la_imu(simulacion):
+    s, errores = simulacion["s"], simulacion["errores"]
+    error_msckf = np.linalg.norm(errores[-1, ms.P])
+    error_imu = np.linalg.norm(simulacion["solo_imu"]["p"][-1] - s["verdad"]["p_w"][-1])
+    assert error_msckf < 0.1                                  # menos de 10 cm tras 5 s (~3,7 m recorridos)
+    assert error_msckf < 0.05 * error_imu                     # la IMU sola se va a metros
+    # El error ya no crece como t²: el de la segunda mitad no es mucho mayor que el de la primera
+    mitad = len(errores) // 2
+    assert np.linalg.norm(errores[mitad:, ms.P], axis=1).max() < 3 * np.linalg.norm(errores[:mitad, ms.P], axis=1).max()
+
+
+def test_msckf_estima_los_sesgos(simulacion):
+    errores, P_final = simulacion["errores"], simulacion["res"]["P_imu"][-1]
+    # La incertidumbre del sesgo del giroscopio baja mucho respecto a P0, y el error real con ella
+    sigma_0 = CFG["inicial"]["sigma_sesgo_gir_rad_s"]
+    assert np.sqrt(np.diag(P_final)[ms.BG]).max() < sigma_0 / 5
+    assert np.linalg.norm(errores[-1, ms.BG]) < np.linalg.norm(simulacion["error_0"][ms.BG]) / 5
+    # Y los errores finales de los sesgos caben en sus ±3 sigma
+    sigmas = np.sqrt(np.diag(P_final))
+    assert (np.abs(errores[-1, 9:15]) < 3 * sigmas[9:15]).all()
+
+
+def test_msckf_ventana_y_covarianza(simulacion):
+    filtro, recuentos = simulacion["filtro"], simulacion["res"]["recuentos"]
+    assert len(filtro.clones) == CFG["ventana"]["clones_max"] - 1
+    assert filtro.P.shape == (15 + 6 * len(filtro.clones),) * 2
+    # Simétrica y sin autovalores negativos (puede ser casi singular: cada clon nace como copia
+    # exacta de la IMU, y esa relación tarda en deshacerse)
+    assert np.abs(filtro.P - filtro.P.T).max() < 1e-12
+    assert np.linalg.eigvalsh(filtro.P).min() > -1e-12 * np.abs(filtro.P).max()
+    # Los clones son imágenes consecutivas, las más recientes
+    imagenes = [c["imagen"] for c in filtro.clones]
+    assert imagenes == list(range(filtro.n_imagenes - len(imagenes), filtro.n_imagenes))
+    # Se usan casi todas las pistas listas, y pocas no pasan la prueba chi-cuadrado
+    usadas = sum(r["usadas"] for r in recuentos)
+    rechazadas = sum(r["chi2"] for r in recuentos)
+    assert usadas > 300 and rechazadas < 0.1 * usadas
+
+
+def test_msckf_nees_razonable(simulacion):
+    # Una sola simulación no basta para medir la consistencia (eso lo hace la herramienta con
+    # muchas), pero sí para detectar un filtro muy confiado: NEES de la pose >> 6
+    errores, P_imu = simulacion["errores"], simulacion["res"]["P_imu"]
+    pose = np.r_[0:3, 6:9]
+    nees = [e[pose] @ np.linalg.solve(P[np.ix_(pose, pose)], e[pose]) for e, P in zip(errores, P_imu)]
+    assert np.mean(nees[20:]) < 15
