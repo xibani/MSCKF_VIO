@@ -54,3 +54,10 @@ vio:
   mundo:
     habitacion_m: [6.0, 6.0, 3.0]  # x y y de -3 a 3, z de 0 a 3
     puntos_por_superficie: 300     # en cada una de las 4 paredes, el suelo y el techo
+
+
+  grabacion_sintetica:         # etapa 13: grabación EuRoC con imágenes, para probar el VIO completo
+    reposo_s: 3.0              # quieto al principio (la inicialización necesita 2 s)
+    rampa_s: 2.0               # arranque suave hasta la velocidad de la trayectoria
+    sigma_mancha_px: 1.5       # cada punto se dibuja como una mancha gaussiana
+    brillo_mancha: 200

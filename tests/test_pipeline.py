@@ -138,3 +138,45 @@ def test_corregir_reposo_anula_la_velocidad():
     filtro.corregir_reposo(0.01)
     assert np.linalg.norm(filtro.estado.v_w) < 0.002
     assert np.sqrt(np.diag(filtro.P)[3:6]).max() < 0.011
+
+
+
+# =====================================================================
+# Paso 13.5
+# =====================================================================
+def test_vio_de_principio_a_fin_en_una_grabacion_sintetica(tmp_path):
+    # Grabación EuRoC con imágenes (3 s quieta + 5 s en marcha) -> fuente de apps/pi_vio
+    # -> front-end -> MSCKF. Cruza las etapas 8, 9, 11, 12 y 13.
+    import copy
+    from apps.pi_vio import ADELANTO_IMU_NS, eventos_grabacion
+    from herramientas.comparar_trayectoria import alinear
+    from herramientas.grabar_simulacion import guardar_grabacion_sintetica
+
+    cfg_vio = copy.deepcopy(cargar_config("simulador")["vio"])
+    cfg_vio["trayectoria"]["duracion_s"] = 8.0
+    s = guardar_grabacion_sintetica(tmp_path, cfg_vio, K, (640, 480), EXT, np.random.default_rng(3))
+
+    pipeline = PipelineVio(K, DIST, R_C_I, T_C_I, EXT["t_d_ns"], CFGS)
+    resultados = []
+    for evento in eventos_grabacion(tmp_path, ADELANTO_IMU_NS):
+        if evento[0] == "imu":
+            pipeline.nueva_imu(*evento[1:])
+        else:
+            r = pipeline.nueva_imagen(*evento[1:])
+            if r is not None:
+                resultados.append(r)
+
+    # Arranca tras los 2 s de reposo y procesa todas las imágenes siguientes
+    assert len(resultados) >= 8 * 20 - 2 * 20 - 2
+    assert set(resultados[0]["tiempos_ms"]) == {"imu", "frontend", "msckf", "total"}
+    assert resultados[-1]["t_ns"] == s["camaras"]["t_ns"][-1] + EXT["t_d_ns"]    # t_cam + t_d
+    # Error frente a la verdad, en el marco del filtro
+    t_est = np.array([r["t_ns"] for r in resultados])
+    p_est = np.array([r["p_w"] for r in resultados])
+    R_est = np.array([r["R_w_i"] for r in resultados])
+    p_ver, _ = alinear(t_est, p_est, R_est, s["verdad"]["t_ns"], s["verdad"]["p_w"], s["verdad"]["R_w_i"])
+    error = np.linalg.norm(p_est - p_ver, axis=1)
+    quieto = (t_est - t_est[0]) < 0.9e9                       # hasta el final del reposo (3 s)
+    assert error[quieto].max() < 0.01                         # ZUPT: no deriva mientras está quieto
+    assert error.max() < 0.15 and error[-1] < 0.1             # ~3,4 m recorridos
+    assert sum(r["msckf"]["usadas"] for r in resultados) > 100
