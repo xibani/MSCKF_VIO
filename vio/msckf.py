@@ -122,3 +122,56 @@ def covarianza_inicial(cfg_ini):
               + [cfg_ini["sigma_posicion_m"]] * 3 + [cfg_ini["sigma_sesgo_gir_rad_s"]] * 3
               + [cfg_ini["sigma_sesgo_acc_m_s2"]] * 3)
     return np.diag(np.array(sigmas) ** 2)
+
+
+# =====================================================================
+# Paso 12.2 — Clones de la pose de la cámara
+# =====================================================================
+def pose_camara_desde_imu(R_w_i, p_w_i, R_i_c, p_i_c):
+    """Pose de la cámara en el mundo: R_w_c = R_w_i·R_i_c,  p_w_c = p_w_i + R_w_i·p_i_c."""
+    return R_w_i @ R_i_c, p_w_i + R_w_i @ p_i_c
+
+
+def jacobiano_clon(R_w_i, R_i_c, p_i_c):
+    """J (6x15): cómo cambia el error del clon [δθ_c, δp_c] con el error de la IMU.
+
+    Con R_verdadera = R_w_i·exp(δθ):
+        R_w_c = R_w_i·exp(δθ)·R_i_c = R_w_i·R_i_c·exp(R_i_cᵀ·δθ)   =>  δθ_c = R_i_cᵀ·δθ
+        p_w_c = p_w_i + δp + R_w_i·exp(δθ)·p_i_c                    =>  δp_c ≈ δp - R_w_i·[p_i_c]x·δθ
+    """
+    J = np.zeros((DIM_CLON, DIM_IMU))
+    J[0:3, TH] = R_i_c.T
+    J[3:6, TH] = -R_w_i @ so3.hat(p_i_c)
+    J[3:6, P] = np.eye(3)
+    return J
+
+
+def clonar_covarianza(P_total, J):
+    """Añade el error de un clon nuevo al final de P.
+
+    El clon es una función del error actual de la IMU: δx_clon = J_total·δx, con
+    J_total = [J | 0 ...]. Por la regla de propagación de covarianzas:
+        P <- [I; J_total] · P · [I; J_total]ᵀ
+    """
+    n = len(P_total)
+    J_total = np.zeros((DIM_CLON, n))
+    J_total[:, :DIM_IMU] = J
+    JP = J_total @ P_total
+    nueva = np.zeros((n + DIM_CLON, n + DIM_CLON))
+    nueva[:n, :n] = P_total
+    nueva[n:, :n] = JP
+    nueva[:n, n:] = JP.T
+    nueva[n:, n:] = JP @ J_total.T
+    return nueva
+
+
+def borrar_clon(P_total, posicion):
+    """Olvida el clon número 'posicion' (0 = el más antiguo): borra sus 6 filas y columnas."""
+    inicio = DIM_IMU + DIM_CLON * posicion
+    quedan = [k for k in range(len(P_total)) if not inicio <= k < inicio + DIM_CLON]
+    return P_total[np.ix_(quedan, quedan)]
+
+
+def inyectar_clon(R_w_c, p_w_c, dx_clon):
+    """Aplica el error [δθ_c, δp_c] (6,) a un clon. Devuelve (R_w_c, p_w_c) nuevos."""
+    return R_w_c @ so3.exp_so3(dx_clon[0:3]), p_w_c + dx_clon[3:6]

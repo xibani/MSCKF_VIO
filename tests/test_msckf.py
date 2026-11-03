@@ -114,3 +114,57 @@ def test_nees_solo_imu():
         suma += error @ np.linalg.solve(P[:9, :9], error)
     nees = suma / n_sim
     assert chi2.ppf(0.0005, 9 * n_sim) / n_sim < nees < chi2.ppf(0.9995, 9 * n_sim) / n_sim
+
+
+
+# =====================================================================
+# Paso 12.2
+# =====================================================================
+R_C_I, T_C_I = sim.extrinseca(CFG_SIM["camara"])
+R_I_C, P_I_C = R_C_I.T, -R_C_I.T @ T_C_I
+
+
+def test_jacobiano_clon_igual_que_diferencias_finitas():
+    e = estado_ejemplo()
+    J = ms.jacobiano_clon(e.R_w_i, R_I_C, P_I_C)
+    R_c, p_c = ms.pose_camara_desde_imu(e.R_w_i, e.p_w, R_I_C, P_I_C)
+    eps = 1e-6
+    J_num = np.zeros((6, 15))
+    for k in range(15):
+        d = np.zeros(15)
+        d[k] = eps
+        columnas = []
+        for signo in (1.0, -1.0):
+            e2 = ms.inyectar_imu(e, signo * d)
+            R2, p2 = ms.pose_camara_desde_imu(e2.R_w_i, e2.p_w, R_I_C, P_I_C)
+            columnas.append(np.concatenate([so3.log_so3(R_c.T @ R2), p2 - p_c]))   # error del clon
+        J_num[:, k] = (columnas[0] - columnas[1]) / (2 * eps)
+    assert np.abs(J - J_num).max() < 1e-8
+
+
+def test_clonar_covarianza():
+    P = covarianza_al_azar(15, 2)
+    e = estado_ejemplo()
+    J = ms.jacobiano_clon(e.R_w_i, R_I_C, P_I_C)
+    P2 = ms.clonar_covarianza(P, J)
+    assert P2.shape == (21, 21) and np.abs(P2 - P2.T).max() < 1e-15
+    assert P2[:15, :15] == pytest.approx(P)                  # la IMU no cambia
+    assert P2[15:, 15:] == pytest.approx(J @ P @ J.T)        # el clon: J·P·Jᵀ
+    assert P2[15:, :15] == pytest.approx(J @ P)              # y está relacionado con la IMU
+    # Con la cámara en el mismo sitio y con los mismos ejes que la IMU, el clon es [δθ, δp]
+    J_identidad = ms.jacobiano_clon(e.R_w_i, np.eye(3), np.zeros(3))
+    P3 = ms.clonar_covarianza(P, J_identidad)
+    indices = np.r_[0:3, 6:9]
+    assert P3[15:, 15:] == pytest.approx(P[np.ix_(indices, indices)])
+    # Al clonar no se gana información: P sigue sin autovalores negativos (el clon repite a la IMU)
+    assert np.linalg.eigvalsh(P2).min() > -1e-12
+
+
+def test_borrar_clon():
+    P = covarianza_al_azar(15 + 18, 3)                      # IMU + 3 clones
+    P2 = ms.borrar_clon(P, 0)                               # olvidar el más antiguo
+    quedan = np.r_[0:15, 21:33]
+    assert P2.shape == (27, 27)
+    assert P2 == pytest.approx(P[np.ix_(quedan, quedan)])
+    P3 = ms.borrar_clon(P, 1)                               # o uno intermedio
+    assert P3 == pytest.approx(P[np.ix_(np.r_[0:21, 27:33], np.r_[0:21, 27:33])])
