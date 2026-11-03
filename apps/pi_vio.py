@@ -6,7 +6,10 @@ Uso, desde ~/svo-pi:
     python -m apps.pi_vio --ip 192.168.1.37
     python -m apps.pi_vio --grabacion datos/sim_vio        # sin sensores: una grabación EuRoC
     python -m apps.pi_vio --grabacion datos/sim_vio --sin-red
+    python -m apps.pi_vio --sin-vista                     # sin enviar las imágenes al visor
 En vivo: QUIETO hasta que aparezca "VIO EN MARCHA". Ctrl+C para terminar.
+demás de la pose (UDP 5005), cada pocas imágenes envía la imagen con sus pistas dibujadas
+(UDP 5006, etapa 14) para apps/visor_web.
 La trayectoria estimada se guarda en vio_trayectoria.csv (dentro de la grabación, o en
 datos/vio_AAAAMMDD_HHMMSS/ en vivo).
 """
@@ -25,6 +28,7 @@ import numpy as np
 from captura import euroc
 from vio import modelo_camara as mc
 from vio import protocolo
+from vio import vista as vista_vio
 from vio.config import RAIZ_PROYECTO, cargar_config
 from vio.pipeline import CABECERA_POSES, PipelineVio, linea_pose
 
@@ -105,6 +109,26 @@ def eventos_en_vivo(cfg_imu, cfg_cam, cfg_vio, contadores):
 
 
 # =====================================================================
+# Envío al visor
+# =====================================================================
+def enviar(emisor, datos, destino):
+    """sendto que no detiene el VIO si el visor no está escuchando (o la red falla)."""
+    try:
+        emisor.sendto(datos, destino)
+    except OSError:
+        pass
+
+
+def enviar_imagen(emisor, destino, t_ns, gris, pipeline, r, cfg_vista):
+    """Etapa 14: dibuja las pistas sobre la imagen y la manda al visor en JPEG."""
+    frontend = pipeline.frontend if pipeline.filtro is not None else None   # antes de arrancar, sin pistas
+    imagen = vista_vio.dibujar_vista(gris, frontend, vista_vio.lineas_estado(pipeline, r), cfg_vista)
+    jpeg = vista_vio.codificar_jpeg(imagen, cfg_vista["calidad_jpeg"], protocolo.MAX_BYTES_JPEG)
+    if jpeg is not None:
+        enviar(emisor, protocolo.empaquetar_imagen(t_ns, jpeg), destino)
+
+
+# =====================================================================
 # Programa principal
 # =====================================================================
 def resumen_tiempos(tiempos, presupuesto_ms):
@@ -123,7 +147,8 @@ def main():
     parser = argparse.ArgumentParser(description="VIO completo: front-end + MSCKF")
     parser.add_argument("--grabacion", default=None, help="carpeta EuRoC (sin ella: en vivo)")
     parser.add_argument("--ip", default=cfg_red["ip_pc"], help="IP del PC con el visor")
-    parser.add_argument("--sin-red", action="store_true", help="no enviar la pose al PC")
+    parser.add_argument("--sin-red", action="store_true", help="no enviar nada al visor")
+    parser.add_argument("--sin-vista", action="store_true", help="enviar la pose, pero no las imágenes")
     args = parser.parse_args()
 
     # --- 1. Configuración ---
@@ -151,6 +176,9 @@ def main():
         print("QUIETO hasta que aparezca VIO EN MARCHA...")
     emisor = None if args.sin_red else socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     destino = (args.ip, cfg_red["puerto"])
+    cfg_vista = cfgs["vio"]["vista"]
+    destino_vista = (args.ip, cfg_vista["puerto"])
+    con_vista = emisor is not None and not args.sin_vista
     salida = open(carpeta / "vio_trayectoria.csv", "w", encoding="utf-8")
     salida.write(CABECERA_POSES)
 
@@ -158,6 +186,7 @@ def main():
     tiempos = []
     t_aviso_ns = None
     intentos_vistos = 0
+    n_imagenes = 0
     try:
         for evento in fuente:
             if evento[0] == "imu":
@@ -167,6 +196,9 @@ def main():
                     print("No estaba quieto:", "; ".join(pipeline.problemas), "-> se repite")
                 continue
             r = pipeline.nueva_imagen(evento[1], evento[2])
+            n_imagenes += 1
+            if con_vista and n_imagenes % cfg_vista["cada_n_imagenes"] == 0:
+                enviar_imagen(emisor, destino_vista, evento[1], evento[2], pipeline, r, cfg_vista)
             if r is None:
                 continue
             if t_aviso_ns is None:
@@ -176,7 +208,7 @@ def main():
 
             # Enviar, guardar y, una vez por segundo, informar
             if emisor is not None:
-                emisor.sendto(protocolo.empaquetar_pose(r["t_ns"], r["R_w_i"], r["p_w"]), destino)
+                enviar(emisor, protocolo.empaquetar_pose(r["t_ns"], r["R_w_i"], r["p_w"]), destino)
             salida.write(linea_pose(r["t_ns"], r["R_w_i"], r["p_w"]))
             tiempos.append(r["tiempos_ms"])
             if r["t_ns"] - t_aviso_ns >= cfgs["vio"]["ejecucion"]["aviso_cada_s"] * 1e9:

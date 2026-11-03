@@ -133,3 +133,31 @@ def test_paquete_imagen_rechazos():
         protocolo.leer_imagen(protocolo.empaquetar_pose(0, np.eye(3), np.zeros(3)))
     with pytest.raises(ValueError):                                   # solo la cabecera, sin JPEG
         protocolo.leer_imagen(protocolo.empaquetar_imagen(0, b""))
+        
+
+
+
+# =====================================================================
+# Paso 14.3 — apps/pi_vio.py (envío)
+# =====================================================================
+def test_enviar_no_se_detiene_si_falla_la_red():
+    emisor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    emisor.close()                                                    # sendto lanzaría OSError
+    pi_vio.enviar(emisor, b"hola", ("127.0.0.1", 9))                  # no lanza nada
+
+
+def test_enviar_imagen_llega_y_se_decodifica():
+    receptor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receptor.bind(("127.0.0.1", 0))
+    receptor.settimeout(2.0)
+    emisor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        pipeline = SimpleNamespace(filtro=None, frontend=None)       # aún inicializando
+        pi_vio.enviar_imagen(emisor, receptor.getsockname(), 42, imagen_gris(), pipeline, None, CFG_VISTA)
+        datos, _ = receptor.recvfrom(65536)
+        t_ns, jpeg = protocolo.leer_imagen(datos)
+        assert t_ns == 42
+        assert cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR).shape == (480, 640, 3)
+    finally:
+        emisor.close()
+        receptor.close()
