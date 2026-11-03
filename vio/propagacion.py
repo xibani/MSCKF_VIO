@@ -5,7 +5,8 @@ Modelo del acelerómetro (fuerza específica, en ejes de la IMU):
     a_m = R_w_i^T @ (a_w - g_w) + b_a          con g_w = (0, 0, -g)
 Despejando la aceleración en el mundo:
     a_w = R_w_i @ (a_m - b_a) + g_w
-Integración en cada intervalo Δt (aceleración constante dentro del intervalo):
+Integración en cada intervalo Δt (aceleración constante dentro del intervalo, con la
+orientación de la mitad del intervalo para pasarla al mundo):
     p <- p + v·Δt + ½·a_w·Δt²
     v <- v + a_w·Δt
     R <- R @ exp((w_m - b_g)·Δt)
@@ -31,8 +32,11 @@ def propagar(estado, w_m, a_m, dt_s, g_w=GRAVEDAD_W):
     """
     nuevo = estado.copia()
 
-    # 1. Aceleración en el mundo, con la orientación del PRINCIPIO del intervalo
-    a_w = aceleracion_mundo(estado.R_w_i, a_m, estado.b_a, g_w)
+    # 1. Aceleración en el mundo, con la orientación de la MITAD del intervalo (etapa 12):
+    #    a_m es la media del intervalo, y la orientación media está a mitad de camino.
+    #    Con la del principio, el método era de primer orden (etapa 11, hallazgo 1).
+    R_medio = paso_giro(estado.R_w_i, w_m, estado.b_g, 0.5 * dt_s)
+    a_w = aceleracion_mundo(R_medio, a_m, estado.b_a, g_w)
 
     # 2. Posición y velocidad (fórmulas del movimiento con aceleración constante)
     nuevo.p_w = estado.p_w + estado.v_w * dt_s + 0.5 * a_w * dt_s ** 2

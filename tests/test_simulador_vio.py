@@ -50,7 +50,7 @@ def test_trayectoria_vio_excita_todos_los_ejes():
     assert (rango_a > 0.1).all(), rango_a
 
 
-def test_propagar_imu_ideal_error_baja_a_la_mitad():
+def test_propagar_imu_ideal_error_baja_a_la_cuarta_parte():
     from vio.estado import EstadoImu
     from vio.propagacion import propagar_secuencia
     cfg_int = cargar_config("orientacion")["integracion"]
@@ -63,8 +63,8 @@ def test_propagar_imu_ideal_error_baja_a_la_mitad():
                             np.zeros(3), np.zeros(3))
         r = propagar_secuencia(inicial, t_ns, w_m, a_m, cfg_int)
         errores.append(np.linalg.norm(r["p"][-1] - tr["p_w"][-1]))
-    # Método de primer orden: el error es proporcional a Δt
-    assert errores[1] / errores[0] == pytest.approx(0.5, abs=0.05)
+    # Método de segundo orden (etapa 12): el error es proporcional a Δt²
+    assert errores[1] / errores[0] == pytest.approx(0.25, abs=0.04)
 
 
 # =====================================================================

@@ -64,13 +64,14 @@ def error_final_circulo(f_hz):
 
 
 def test_circulo_reproduce_la_trayectoria():
-    assert error_final_circulo(200) < 0.03          # < 3 cm tras 10 s y 1,6 vueltas
+    assert error_final_circulo(200) < 1e-4          # < 0,1 mm tras 10 s y 1,6 vueltas (etapa 12)
 
 
-def test_circulo_metodo_de_primer_orden():
-    # Doblar la frecuencia divide el error por 2: el error es proporcional a Δt
+def test_circulo_metodo_de_segundo_orden():
+    # Doblar la frecuencia divide el error por 4: el error es proporcional a Δt² (etapa 12;
+    # con la orientación del principio del intervalo se dividía por 2: primer orden)
     cociente = error_final_circulo(200) / error_final_circulo(400)
-    assert cociente == pytest.approx(2.0, abs=0.1)
+    assert cociente == pytest.approx(4.0, abs=0.2)
 
 
 def test_sesgo_de_acelerometro_sin_corregir():
