@@ -100,30 +100,36 @@ def prediccion_y_jacobiano(theta, poses_rel):
     y por la regla de la cadena  d h / d theta = (d h / d g) · (d g / d theta), con
         d g / d theta = [ R_i_a[:, 0] | R_i_a[:, 1] | t_i_a ]
         d h / d g     = [[1/g_z, 0, -g_x/g_z²], [0, 1/g_z, -g_y/g_z²]]
+    Etapa 13: las N cámaras a la vez, sin bucle (la versión con bucle está en los tests).
     """
     alfa, beta, rho = theta
-    n = len(poses_rel)
-    h = np.zeros((n, 2))
-    J = np.zeros((2 * n, 3))
-    for i, (R, t) in enumerate(poses_rel):
-        # 1. Predicción
-        g = R @ np.array([alfa, beta, 1.0]) + rho * t
-        h[i] = g[:2] / g[2]
-        # 2. Jacobiano por la regla de la cadena
-        dh_dg = np.array([[1.0 / g[2], 0.0, -g[0] / g[2] ** 2],
-                          [0.0, 1.0 / g[2], -g[1] / g[2] ** 2]])
-        dg_dtheta = np.column_stack([R[:, 0], R[:, 1], t])
-        J[2 * i:2 * i + 2] = dh_dg @ dg_dtheta
+    R = np.array([pose[0] for pose in poses_rel])                 # (N, 3, 3)
+    t = np.array([pose[1] for pose in poses_rel])                 # (N, 3)
+    # 1. Predicción: fila i = R_i · (alfa, beta, 1) + rho · t_i
+    g = R @ np.array([alfa, beta, 1.0]) + rho * t                 # (N, 3)
+    h = g[:, :2] / g[:, 2:3]
+    # 2. Jacobiano por la regla de la cadena, una matriz 2x3 por cámara
+    n = len(g)
+    dh_dg = np.zeros((n, 2, 3))
+    dh_dg[:, 0, 0] = 1.0 / g[:, 2]
+    dh_dg[:, 0, 2] = -g[:, 0] / g[:, 2] ** 2
+    dh_dg[:, 1, 1] = 1.0 / g[:, 2]
+    dh_dg[:, 1, 2] = -g[:, 1] / g[:, 2] ** 2
+    dg_dtheta = np.stack([R[:, :, 0], R[:, :, 1], t], axis=2)    # columnas de cada (3, 3)
+    J = (dh_dg @ dg_dtheta).reshape(2 * n, 3)                     # filas x0, y0, x1, y1...
     return h, J
 
 
 def errores_reproyeccion_px(p_w, poses, xy, focal_px):
-    """Distancia entre lo observado y la proyección de p_w en cada imagen [px]."""
-    errores = []
-    for (R, t), obs in zip(poses, xy):
-        prediccion, _ = proyectar_normalizado(R, t, p_w)
-        errores.append(np.linalg.norm(prediccion - obs) * focal_px)
-    return np.array(errores)
+    """Distancia entre lo observado y la proyección de p_w en cada imagen [px].
+
+    Etapa 13: todas las imágenes a la vez, sin bucle.
+    """
+    R = np.array([pose[0] for pose in poses])                     # (N, 3, 3)
+    t = np.array([pose[1] for pose in poses])                     # (N, 3)
+    p_c = R @ p_w + t                                             # (N, 3): el punto en cada cámara
+    prediccion = p_c[:, :2] / p_c[:, 2:3]
+    return np.linalg.norm(prediccion - np.asarray(xy), axis=1) * focal_px
 
 
 def refinar(p_w, poses, xy, cfg_gn):
@@ -173,18 +179,18 @@ def angulo_paralaje(poses, xy):
     Solo usa las observaciones y las orientaciones: se puede calcular ANTES de triangular.
     El rayo de la observación (x, y) en ejes de la cámara es (x, y, 1); en el mundo,
     R_c_wᵀ · (x, y, 1). Si la cámara solo ha girado, todos los rayos son paralelos: 0°.
+    Etapa 13: todos los pares a la vez, sin bucles (era el 75 % del tiempo del MSCKF).
     """
-    rayos = []
-    for (R, _), (x, y) in zip(poses, xy):
-        d = R.T @ np.array([x, y, 1.0])
-        rayos.append(d / np.linalg.norm(d))
-    maximo = 0.0
-    for i in range(len(rayos)):
-        for j in range(i + 1, len(rayos)):
-            # atan2(|a x b|, a · b): preciso también para ángulos muy pequeños (arccos no lo es)
-            angulo = np.arctan2(np.linalg.norm(np.cross(rayos[i], rayos[j])), rayos[i] @ rayos[j])
-            maximo = max(maximo, angulo)
-    return np.degrees(maximo)
+    # 1. Rayos en el mundo, uno por fila: rayo_k = R_kᵀ · (x_k, y_k, 1)
+    R = np.array([pose[0] for pose in poses])                     # (N, 3, 3)
+    xy = np.asarray(xy, dtype=float)
+    rayos_c = np.column_stack([xy, np.ones(len(xy))])             # (N, 3)
+    rayos = np.einsum("kji,kj->ki", R, rayos_c)                   # (N, 3)
+    rayos = rayos / np.linalg.norm(rayos, axis=1, keepdims=True)
+    # 2. Ángulo de cada par (i, j) con atan2(|a x b|, a · b): matrices (N, N)
+    senos = np.linalg.norm(np.cross(rayos[:, None, :], rayos[None, :, :]), axis=2)
+    cosenos = rayos @ rayos.T
+    return float(np.degrees(np.arctan2(senos, cosenos).max()))
 
 
 def es_fiable(p_w, poses, xy, cfg_fia, focal_px):

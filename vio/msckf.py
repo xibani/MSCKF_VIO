@@ -204,17 +204,34 @@ def residuo_pista(poses_clones, posiciones, xy, p_w, dim):
     posiciones: posición de cada uno de esos clones en la ventana (0 = el más antiguo).
     xy: (n, 2) observaciones. p_w: (3,) punto triangulado. dim: tamaño del estado de error.
     Devuelve: r (2n,), H_x (2n x dim), H_f (2n x 3).
+    Etapa 13: las n observaciones a la vez (mismas fórmulas que jacobianos_observacion).
     """
     n = len(xy)
-    r = np.zeros(2 * n)
+    R_w_c = np.array([pose[0] for pose in poses_clones])          # (n, 3, 3)
+    p_w_c = np.array([pose[1] for pose in poses_clones])          # (n, 3)
+    R_c_w = np.transpose(R_w_c, (0, 2, 1))                        # R_w_cᵀ de cada clon
+    # 1. El punto en cada cámara y su proyección
+    p_c = np.einsum("kij,kj->ki", R_c_w, p_w - p_w_c)              # (n, 3)
+    x, y, z = p_c[:, 0], p_c[:, 1], p_c[:, 2]
+    r = (np.asarray(xy) - p_c[:, :2] / p_c[:, 2:3]).ravel()        # x0, y0, x1, y1...
+    # 2. Jacobiano de la proyección, (n, 2, 3)
+    J_proy = np.zeros((n, 2, 3))
+    J_proy[:, 0, 0] = 1.0 / z
+    J_proy[:, 0, 2] = -x / z ** 2
+    J_proy[:, 1, 1] = 1.0 / z
+    J_proy[:, 1, 2] = -y / z ** 2
+    # 3. [p_c]x de cada observación, (n, 3, 3)
+    hat_pc = np.zeros((n, 3, 3))
+    hat_pc[:, 0, 1], hat_pc[:, 0, 2] = -z, y
+    hat_pc[:, 1, 0], hat_pc[:, 1, 2] = z, -x
+    hat_pc[:, 2, 0], hat_pc[:, 2, 1] = -y, x
+    # 4. H_clon = J_proy·[ [p_c]x | -R_w_cᵀ ],  H_f = J_proy·R_w_cᵀ
+    H_clon = np.concatenate([J_proy @ hat_pc, -(J_proy @ R_c_w)], axis=2)   # (n, 2, 6)
+    H_f = (J_proy @ R_c_w).reshape(2 * n, 3)
     H_x = np.zeros((2 * n, dim))
-    H_f = np.zeros((2 * n, 3))
-    for k, ((R_w_c, p_w_c), posicion) in enumerate(zip(poses_clones, posiciones)):
-        h, H_clon, H_punto = jacobianos_observacion(R_w_c, p_w_c, p_w)
-        r[2 * k:2 * k + 2] = xy[k] - h
+    for k, posicion in enumerate(posiciones):
         columna = DIM_IMU + DIM_CLON * posicion
-        H_x[2 * k:2 * k + 2, columna:columna + DIM_CLON] = H_clon
-        H_f[2 * k:2 * k + 2] = H_punto
+        H_x[2 * k:2 * k + 2, columna:columna + DIM_CLON] = H_clon[k]
     return r, H_x, H_f
 
 
@@ -232,6 +249,17 @@ def proyectar_nulo(H_x, H_f, r):
     return A.T @ H_x, A.T @ r
 
 
+_UMBRALES_CHI2 = {}     # (confianza, grados de libertad) -> umbral: se calcula una sola vez
+
+
+def umbral_chi2(confianza, grados):
+    """chi2.ppf(confianza, grados), recordando los ya calculados (etapa 13: scipy es lento)."""
+    clave = (confianza, grados)
+    if clave not in _UMBRALES_CHI2:
+        _UMBRALES_CHI2[clave] = chi2.ppf(confianza, grados)
+    return _UMBRALES_CHI2[clave]
+
+
 def prueba_chi2(H0, r0, P_total, sigma2, confianza):
     """¿Encaja la pista con lo que el filtro espera? Devuelve (bool, d, umbral).
 
@@ -240,8 +268,22 @@ def prueba_chi2(H0, r0, P_total, sigma2, confianza):
     """
     S = H0 @ P_total @ H0.T + sigma2 * np.eye(len(r0))
     d = r0 @ np.linalg.solve(S, r0)
-    umbral = chi2.ppf(confianza, len(r0))
+    umbral = umbral_chi2(confianza, len(r0))
     return d <= umbral, d, umbral
+
+
+def comprimir_qr(H, r):
+    """Reduce las filas de la corrección sin perder información (etapa 13).
+
+    Con más filas (m) que columnas (n), H = Q·R_qr con Q (m x n) de columnas ortonormales y
+    R_qr (n x n) triangular. Multiplicar por Qᵀ no cambia la información ni el ruido
+    (Qᵀ·σ²I·Q = σ²I), y deja n ecuaciones en lugar de m:  Qᵀ·r = R_qr·δx + ruido.
+    Devuelve: (H_comprimida, r_comprimido); sin cambios si m <= n.
+    """
+    if len(r) <= H.shape[1]:
+        return H, r
+    Q, R_qr = np.linalg.qr(H)                      # modo "reduced": Q (m x n)
+    return R_qr, Q.T @ r
 
 
 def correccion_kalman(P_total, H, r, sigma2):
@@ -366,9 +408,10 @@ class Msckf:
         if filas_H:
             H = np.vstack(filas_H)
             r = np.concatenate(filas_r)
+            est["filas"] = len(r)
+            H, r = comprimir_qr(H, r)                  # etapa 13: menos filas, mismo resultado
             dx, self.P = correccion_kalman(self.P, H, r, self.sigma2)
             self._inyectar(dx)
-            est["filas"] = len(r)
 
     def procesar_imagen(self, t_ns, ids, xy):
         """Una imagen nueva con las observaciones de los puntos seguidos.
