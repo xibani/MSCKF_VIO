@@ -1,0 +1,8 @@
+matplotlib==3.11.2
+numpy==2.5.4
+picamera2==0.3.38
+pytest==9.2.0
+PyYAML==6.0.3
+scipy==1.18.1
+smbus2==0.6.1
+opencv-python

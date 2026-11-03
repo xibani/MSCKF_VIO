@@ -1,12 +1,14 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
 # Virtual environments
 .venv/
+.venv-rpi/
 venv/
 env/
 
