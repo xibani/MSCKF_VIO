@@ -6,3 +6,51 @@ circulo:
   altura_m: 0.0         # altura constante
   duracion_s: 10.0
   frecuencia_hz: 200    # frecuencia de la IMU simulada
+
+
+# ---------------------------------------------------------------------
+# Etapa 11 — Simulador VIO completo: IMU con ruido y sesgo + cámara viendo una habitación
+# ---------------------------------------------------------------------
+vio:
+  semilla: 0
+
+  trayectoria:
+    duracion_s: 30.0
+    frecuencia_imu_hz: 200       # como la MPU-6050
+    radio_m: 1.5                 # círculo horizontal centrado en la habitación
+    omega_rad_s: 0.5             # una vuelta cada 12,6 s (0,75 m/s)
+    altura_m: 1.5                # altura media
+    oscilacion_z_m: 0.3          # sube y baja ±0,3 m...
+    omega_z_rad_s: 1.3           # ...a esta velocidad angular
+    balanceo_rad: 0.2            # giro sobre el eje x de la IMU (±11°)
+    omega_balanceo_rad_s: 0.9
+    cabeceo_rad: 0.15            # giro sobre el eje y de la IMU (±9°)
+    omega_cabeceo_rad_s: 0.7
+    paso_derivadas_s: 1.0e-3     # h de las diferencias finitas (IMU ideal)
+
+  imu:
+    # PROVISIONAL: hoja de datos de la MPU-6050 (ruido) y valores típicos de MEMS baratos
+    # (paseo del sesgo, la hoja no lo da). SUSTITUIR por la varianza de Allan (etapa 7.3).
+    ruido_gir: 8.7e-5            # N_g [rad/s/√Hz]   (0,005 °/s/√Hz)
+    ruido_acc: 3.9e-3            # N_a [m/s²/√Hz]    (400 µg/√Hz)
+    paseo_sesgo_gir: 2.0e-5      # K_g [rad/s²/√Hz]
+    paseo_sesgo_acc: 4.0e-4      # K_a [m/s³/√Hz]
+    sesgo_inicial_gir: [0.005, -0.003, 0.004]    # [rad/s]  (~0,3 °/s)
+    sesgo_inicial_acc: [0.05, -0.04, 0.08]       # [m/s²]
+
+  camara:
+    frecuencia_hz: 20            # una imagen cada 10 muestras de IMU
+    ruido_px: 1.0                # ruido de cada observación (antes de normalizar)
+    profundidad_min_m: 0.2       # puntos más cerca no se observan
+    # PROVISIONAL (hasta Kalibr, etapa 7.4): cámara mirando hacia el eje x de la IMU.
+    # Columnas de R_i_c = ejes x, y, z de la cámara expresados en ejes de la IMU:
+    #   x_cam (derecha) = -y_imu,  y_cam (abajo) = -z_imu,  z_cam (delante) = +x_imu
+    R_i_c:
+      - [0.0, 0.0, 1.0]
+      - [-1.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0]
+    p_i_c_m: [0.03, 0.0, 0.01]   # posición de la cámara en ejes de la IMU [m]
+
+  mundo:
+    habitacion_m: [6.0, 6.0, 3.0]  # x y y de -3 a 3, z de 0 a 3
+    puntos_por_superficie: 300     # en cada una de las 4 paredes, el suelo y el techo
