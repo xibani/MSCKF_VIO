@@ -168,3 +168,72 @@ def test_borrar_clon():
     assert P2 == pytest.approx(P[np.ix_(quedan, quedan)])
     P3 = ms.borrar_clon(P, 1)                               # o uno intermedio
     assert P3 == pytest.approx(P[np.ix_(np.r_[0:21, 27:33], np.r_[0:21, 27:33])])
+
+
+
+# =====================================================================
+# Paso 12.3
+# =====================================================================
+def test_jacobianos_observacion_igual_que_diferencias_finitas():
+    R_w_c, p_w_c = so3.exp_so3([0.1, 1.4, -0.2]), np.array([0.5, -0.3, 1.2])
+    p_w = p_w_c + R_w_c @ np.array([0.4, -0.3, 3.0])        # un punto delante de la cámara
+    h, H_clon, H_f = ms.jacobianos_observacion(R_w_c, p_w_c, p_w)
+    eps = 1e-6
+    H_clon_num, H_f_num = np.zeros((2, 6)), np.zeros((2, 3))
+    for k in range(6):
+        d = np.zeros(6)
+        d[k] = eps
+        h_mas = ms.jacobianos_observacion(*ms.inyectar_clon(R_w_c, p_w_c, d), p_w)[0]
+        h_menos = ms.jacobianos_observacion(*ms.inyectar_clon(R_w_c, p_w_c, -d), p_w)[0]
+        H_clon_num[:, k] = (h_mas - h_menos) / (2 * eps)
+    for k in range(3):
+        d = np.zeros(3)
+        d[k] = eps
+        H_f_num[:, k] = (ms.jacobianos_observacion(R_w_c, p_w_c, p_w + d)[0]
+                         - ms.jacobianos_observacion(R_w_c, p_w_c, p_w - d)[0]) / (2 * eps)
+    assert np.abs(H_clon - H_clon_num).max() < 1e-8
+    assert np.abs(H_f - H_f_num).max() < 1e-8
+
+
+def test_proyectar_nulo():
+    rng = np.random.default_rng(4)
+    n = 6                                                     # 6 observaciones: 12 filas
+    H_f = rng.normal(0.0, 1.0, (2 * n, 3))
+    H_x = rng.normal(0.0, 1.0, (2 * n, 40))
+    r = rng.normal(0.0, 1.0, 2 * n)
+    H0, r0 = ms.proyectar_nulo(H_x, H_f, r)
+    assert H0.shape == (2 * n - 3, 40) and r0.shape == (2 * n - 3,)
+    # A cumple Aᵀ·H_f = 0, y sus columnas son ortonormales (Aᵀ·A = I): el ruido sigue siendo sigma²·I
+    Q, _ = np.linalg.qr(H_f, mode="complete")
+    A = Q[:, 3:]
+    assert np.abs(A.T @ H_f).max() < 1e-12
+    assert A.T @ A == pytest.approx(np.eye(2 * n - 3), abs=1e-12)
+    assert H0 == pytest.approx(A.T @ H_x) and r0 == pytest.approx(A.T @ r)
+
+
+def test_correccion_kalman():
+    P = covarianza_al_azar(27, 5)
+    H = np.random.default_rng(6).normal(0.0, 1.0, (9, 27))
+    r = np.random.default_rng(7).normal(0.0, 1.0, 9)
+    dx, P2 = ms.correccion_kalman(P, H, r, 0.5)
+    assert np.abs(P2 - P2.T).max() < 1e-12 and np.linalg.eigvalsh(P2).min() > 0
+    assert np.trace(P2) < np.trace(P)                         # la medida reduce la incertidumbre
+    # Igual que la forma simple con la K óptima (etapa 10)
+    S = H @ P @ H.T + 0.5 * np.eye(9)
+    K_opt = P @ H.T @ np.linalg.inv(S)
+    assert dx == pytest.approx(K_opt @ r)
+    assert P2 == pytest.approx((np.eye(27) - K_opt @ H) @ P, abs=1e-10)
+
+
+def test_prueba_chi2():
+    rng = np.random.default_rng(8)
+    P = covarianza_al_azar(21, 9) * 1e-4
+    H0 = rng.normal(0.0, 1.0, (9, 21))
+    S = H0 @ P @ H0.T + 0.01 * np.eye(9)
+    L = np.linalg.cholesky(S)
+    # Residuos con la covarianza que espera el filtro: pasan el 95 % de las veces
+    pasan = [ms.prueba_chi2(H0, L @ rng.normal(0.0, 1.0, 9), P, 0.01, 0.95)[0] for _ in range(2000)]
+    assert np.mean(pasan) == pytest.approx(0.95, abs=0.015)
+    # Un residuo con un error grosero no pasa
+    malo = L @ rng.normal(0.0, 1.0, 9) + 2.0
+    assert not ms.prueba_chi2(H0, malo, P, 0.01, 0.95)[0]

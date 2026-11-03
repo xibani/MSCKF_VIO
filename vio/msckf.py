@@ -175,3 +175,83 @@ def borrar_clon(P_total, posicion):
 def inyectar_clon(R_w_c, p_w_c, dx_clon):
     """Aplica el error [δθ_c, δp_c] (6,) a un clon. Devuelve (R_w_c, p_w_c) nuevos."""
     return R_w_c @ so3.exp_so3(dx_clon[0:3]), p_w_c + dx_clon[3:6]
+
+
+# =====================================================================
+# Paso 12.3 — Corrección con las pistas
+# =====================================================================
+def jacobianos_observacion(R_w_c, p_w_c, p_w):
+    """Predicción de una observación y sus jacobianos.
+
+    p_c = R_w_cᵀ·(p_w - p_w_c),  h = (x/z, y/z).  Con R_w_c verdadera = R_w_c·exp(δθ_c):
+        p_c ≈ p_c + [p_c]x·δθ_c - R_w_cᵀ·δp_c + R_w_cᵀ·δp_f
+    Devuelve: h (2,), H_clon (2x6) respecto a [δθ_c, δp_c], H_f (2x3) respecto al punto.
+    """
+    p_c = R_w_c.T @ (p_w - p_w_c)
+    x, y, z = p_c
+    h = np.array([x / z, y / z])
+    J_proy = np.array([[1.0 / z, 0.0, -x / z ** 2],
+                       [0.0, 1.0 / z, -y / z ** 2]])
+    H_clon = J_proy @ np.hstack([so3.hat(p_c), -R_w_c.T])
+    H_f = J_proy @ R_w_c.T
+    return h, H_clon, H_f
+
+
+def residuo_pista(poses_clones, posiciones, xy, p_w, dim):
+    """Residuos y jacobianos de todas las observaciones de una pista.
+
+    poses_clones: lista de (R_w_c, p_w_c) de los clones en que se vio, en orden.
+    posiciones: posición de cada uno de esos clones en la ventana (0 = el más antiguo).
+    xy: (n, 2) observaciones. p_w: (3,) punto triangulado. dim: tamaño del estado de error.
+    Devuelve: r (2n,), H_x (2n x dim), H_f (2n x 3).
+    """
+    n = len(xy)
+    r = np.zeros(2 * n)
+    H_x = np.zeros((2 * n, dim))
+    H_f = np.zeros((2 * n, 3))
+    for k, ((R_w_c, p_w_c), posicion) in enumerate(zip(poses_clones, posiciones)):
+        h, H_clon, H_punto = jacobianos_observacion(R_w_c, p_w_c, p_w)
+        r[2 * k:2 * k + 2] = xy[k] - h
+        columna = DIM_IMU + DIM_CLON * posicion
+        H_x[2 * k:2 * k + 2, columna:columna + DIM_CLON] = H_clon
+        H_f[2 * k:2 * k + 2] = H_punto
+    return r, H_x, H_f
+
+
+def proyectar_nulo(H_x, H_f, r):
+    """Elimina el error del punto de las ecuaciones.
+
+    r ≈ H_x·δx + H_f·δp_f + ruido. Con A (2n x (2n-3)) cuyas columnas son ortonormales y
+    perpendiculares a las de H_f (Aᵀ·H_f = 0), multiplicando por Aᵀ:
+        Aᵀ·r ≈ Aᵀ·H_x·δx + Aᵀ·ruido          (el punto ha desaparecido)
+    A son las últimas 2n - 3 columnas de Q en la descomposición QR completa de H_f.
+    Devuelve: (H_0 = Aᵀ·H_x, r_0 = Aᵀ·r).
+    """
+    Q, _ = np.linalg.qr(H_f, mode="complete")
+    A = Q[:, 3:]
+    return A.T @ H_x, A.T @ r
+
+
+def prueba_chi2(H0, r0, P_total, sigma2, confianza):
+    """¿Encaja la pista con lo que el filtro espera? Devuelve (bool, d, umbral).
+
+    Si todo es correcto, r_0 es gaussiano con covarianza S = H_0·P·H_0ᵀ + sigma²·I, así que
+    d = r_0ᵀ·S⁻¹·r_0 sigue una chi-cuadrado con len(r_0) grados de libertad (etapa 10).
+    """
+    S = H0 @ P_total @ H0.T + sigma2 * np.eye(len(r0))
+    d = r0 @ np.linalg.solve(S, r0)
+    umbral = chi2.ppf(confianza, len(r0))
+    return d <= umbral, d, umbral
+
+
+def correccion_kalman(P_total, H, r, sigma2):
+    """Corrección de Kalman con todas las filas apiladas (forma de Joseph, como en la etapa 10).
+
+    Devuelve: (dx, P) con dx el error estimado (que se inyectará) y P corregida.
+    """
+    S = H @ P_total @ H.T + sigma2 * np.eye(len(r))
+    K = np.linalg.solve(S, H @ P_total).T          # K = P·Hᵀ·S⁻¹ (S es simétrica)
+    dx = K @ r
+    I_KH = np.eye(len(P_total)) - K @ H
+    P_nueva = I_KH @ P_total @ I_KH.T + sigma2 * K @ K.T
+    return dx, 0.5 * (P_nueva + P_nueva.T)
