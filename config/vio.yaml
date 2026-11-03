@@ -15,3 +15,10 @@ ejecucion:
   presupuesto_ms: 50.0        # tiempo disponible por imagen a 20 fps
   cola_imu_max: 4000          # muestras de IMU en espera entre los dos procesos (20 s a 200 Hz)
   timeout_imu_s: 15.0         # espera máxima a que arranque el proceso de la IMU
+
+vista:                        # etapa 14: la imagen con sus pistas, para el visor de la tablet
+  puerto: 5006                # UDP, distinto del de la pose (5005)
+  cada_n_imagenes: 4          # 20 fps / 4 = 5 imágenes por segundo al visor
+  calidad_jpeg: 70            # 0-100; si no cabe en un paquete UDP, se baja sola
+  cola_pista: 10              # últimas posiciones de cada pista que se dibujan
+  longitud_larga: 20          # a partir de esta longitud, la pista se dibuja en verde
