@@ -1,0 +1,25 @@
+# config/msckf.yaml — Etapa 12: filtro MSCKF (Multi-State Constraint Kalman Filter)
+
+imu:
+  # Ruido que el FILTRO cree que tiene la IMU. PROVISIONAL: los mismos valores que el
+  # simulador (hoja de datos de la MPU-6050). SUSTITUIR por la varianza de Allan (etapa 7.3).
+  ruido_gir: 8.7e-5            # N_g [rad/s/√Hz]
+  ruido_acc: 3.9e-3            # N_a [m/s²/√Hz]
+  paseo_sesgo_gir: 2.0e-5      # K_g [rad/s²/√Hz]
+  paseo_sesgo_acc: 4.0e-4      # K_a [m/s³/√Hz]
+
+inicial:
+  # Desviaciones típicas del error inicial: la diagonal de P0
+  sigma_orientacion_rad: 0.01  # ~0,6° (la inclinación sale del acelerómetro, etapa 5)
+  sigma_velocidad_m_s: 0.05
+  sigma_posicion_m: 0.001      # el origen del mundo se define donde arranca: casi sin error
+  sigma_sesgo_gir_rad_s: 0.01  # ~0,6 °/s: del orden del sesgo de una MPU-6050 sin calibrar
+  sigma_sesgo_acc_m_s2: 0.1
+
+ventana:
+  clones_max: 15               # M: imágenes cuya pose se guarda en el estado
+
+correccion:
+  ruido_px: 1.0                # sigma de cada observación de la cámara [px]
+  observaciones_min: 3         # pistas más cortas no se usan
+  confianza_chi2: 0.95         # prueba de outliers
