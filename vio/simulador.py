@@ -120,3 +120,36 @@ def imu_ideal(pose, t_s, h):
         a_w[k] = (p_mas - 2 * p_k + p_menos) / h ** 2
         w_i[k] = so3.log_so3(R_menos.T @ R_mas) / (2 * h)
     return {"R_w_i": R_w_i, "p_w": p_w, "v_w": v_w, "a_w": a_w, "w_i": w_i}
+
+
+# ---------------------------------------------------------------------
+# Paso 11.2 — Ruido blanco y sesgo con paseo aleatorio
+# ---------------------------------------------------------------------
+def ruido_y_sesgo(n, frecuencia_hz, densidad_ruido, paseo_sesgo, sesgo_inicial, rng):
+    """Ruido blanco y sesgo variable de un sensor de 3 ejes.
+
+    densidad_ruido: N [unidad/√Hz]. Cada muestra lleva un ruido de sigma = N·√f.
+    paseo_sesgo: K [unidad/s/√Hz]. En cada paso, b <- b + K·√Δt·(normal de varianza 1).
+    Devuelve: (blanco (n, 3), sesgo (n, 3)).
+    """
+    dt = 1.0 / frecuencia_hz
+    blanco = rng.normal(0.0, densidad_ruido * np.sqrt(frecuencia_hz), (n, 3))
+    sesgo = np.zeros((n, 3))
+    sesgo[0] = sesgo_inicial
+    for k in range(1, n):
+        sesgo[k] = sesgo[k - 1] + paseo_sesgo * np.sqrt(dt) * rng.normal(0.0, 1.0, 3)
+    return blanco, sesgo
+
+
+def imu_con_ruido(tr, cfg_imu, frecuencia_hz, rng):
+    """Lo que mediría la MPU-6050 en la trayectoria tr (dict de imu_ideal).
+
+    Devuelve: (w_m, a_m, b_g, b_a), arrays (N, 3): medidas y sesgos verdaderos.
+    """
+    n = len(tr["R_w_i"])
+    w_ideal, a_ideal = medidas_imu(tr["R_w_i"], tr["a_w"], tr["w_i"])
+    blanco_g, b_g = ruido_y_sesgo(n, frecuencia_hz, cfg_imu["ruido_gir"],
+                                  cfg_imu["paseo_sesgo_gir"], cfg_imu["sesgo_inicial_gir"], rng)
+    blanco_a, b_a = ruido_y_sesgo(n, frecuencia_hz, cfg_imu["ruido_acc"],
+                                  cfg_imu["paseo_sesgo_acc"], cfg_imu["sesgo_inicial_acc"], rng)
+    return w_ideal + b_g + blanco_g, a_ideal + b_a + blanco_a, b_g, b_a
