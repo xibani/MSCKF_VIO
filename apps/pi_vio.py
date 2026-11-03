@@ -8,6 +8,8 @@ Uso, desde ~/svo-pi:
     python -m apps.pi_vio --grabacion datos/sim_vio --sin-red
     python -m apps.pi_vio --sin-vista                     # sin enviar las imágenes al visor
 En vivo: QUIETO hasta que aparezca "VIO EN MARCHA". Ctrl+C para terminar.
+Al encender la Pi lo lanza systemd (sistema/instalar_servicios.sh); "systemctl stop" envía
+  SIGTERM, que aquí se trata igual que Ctrl+C.
 demás de la pose (UDP 5005), cada pocas imágenes envía la imagen con sus pistas dibujadas
 (UDP 5006, etapa 14) para apps/visor_web.
 La trayectoria estimada se guarda en vio_trayectoria.csv (dentro de la grabación, o en
@@ -18,6 +20,7 @@ import argparse
 import multiprocessing as mp
 import os
 import queue
+import signal
 import socket
 from datetime import datetime
 from pathlib import Path
@@ -131,6 +134,18 @@ def enviar_imagen(emisor, destino, t_ns, gris, pipeline, r, cfg_vista):
 # =====================================================================
 # Programa principal
 # =====================================================================
+def terminar_con_sigterm():
+      """Que SIGTERM (lo que envía "systemctl stop") haga lo mismo que Ctrl+C.
+
+      Por defecto SIGTERM mata el proceso sin ejecutar los finally: la cámara y la IMU no se
+      cerrarían y el CSV perdería sus últimas líneas. Lanzando KeyboardInterrupt se sale por
+      el mismo camino que con Ctrl+C.
+      """
+      def manejador(_senal, _marco):
+          raise KeyboardInterrupt
+      signal.signal(signal.SIGTERM, manejador)
+      
+      
 def resumen_tiempos(tiempos, presupuesto_ms):
     """Imprime media, percentil 95 y máximo de cada parte, y cuántas imágenes se pasan."""
     print("Tiempo por imagen [ms]:      media    p95    máx")
@@ -150,6 +165,8 @@ def main():
     parser.add_argument("--sin-red", action="store_true", help="no enviar nada al visor")
     parser.add_argument("--sin-vista", action="store_true", help="enviar la pose, pero no las imágenes")
     args = parser.parse_args()
+    
+    terminar_con_sigterm()
 
     # --- 1. Configuración ---
     cfgs = {nombre: cargar_config(nombre) for nombre in ("vio", "frontend", "msckf", "triangulacion")}
@@ -221,6 +238,7 @@ def main():
                     linea += (f" | IMU perdidas {contadores['perdidas'].value}"
                               f" | errores I2C {contadores['errores_i2c'].value}")
                 print(linea)
+                salida.flush()               # al disco cada segundo: por si se desenchufa la Pi
     except KeyboardInterrupt:
         print("\nTerminado")
     finally:

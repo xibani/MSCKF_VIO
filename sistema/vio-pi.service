@@ -1,0 +1,27 @@
+# sistema/vio-pi.service — Plantilla del servicio del VIO en vivo (etapa 14).
+# No se copia a mano: sistema/instalar_servicios.sh cambia @USUARIO@, @PROYECTO@ y @PYTHON@
+# por los de esta Pi y la instala en /etc/systemd/system/.
+
+[Unit]
+Description=VIO-Pi: VIO en vivo (cámara + IMU + MSCKF)
+# Arranca el visor a la vez y, si está, después de él (si no, el VIO funciona igual)
+Wants=vio-visor-web.service
+After=vio-visor-web.service
+
+[Service]
+Type=simple
+User=@USUARIO@
+WorkingDirectory=@PROYECTO@
+Environment=PYTHONUNBUFFERED=1
+# Todo en la propia Pi: la pose y las imágenes van al visor web por 127.0.0.1
+ExecStart=@PYTHON@ -m apps.pi_vio --ip 127.0.0.1
+# Si falla (la cámara aún no está lista, la IMU no responde...), se relanza a los 5 s
+Restart=on-failure
+RestartSec=5
+# Al parar: SIGTERM solo a pi_vio, que cierra la IMU, la cámara y el CSV como con Ctrl+C;
+# si a los 15 s queda algo vivo, systemd lo mata
+KillMode=mixed
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

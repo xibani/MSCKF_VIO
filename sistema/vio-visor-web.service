@@ -1,0 +1,22 @@
+# sistema/vio-visor-web.service — Plantilla del servicio del visor web (etapa 14).
+# No se copia a mano: sistema/instalar_servicios.sh cambia @USUARIO@, @PROYECTO@ y @PYTHON@
+# por los de esta Pi y la instala en /etc/systemd/system/.
+
+[Unit]
+Description=VIO-Pi: visor web para la tablet (HTTP 8000, UDP 5005 y 5006)
+After=network.target
+
+[Service]
+Type=simple
+User=@USUARIO@
+WorkingDirectory=@PROYECTO@
+# Sin búfer: cada print llega al registro (journalctl) en el momento
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON@ -m apps.visor_web
+# Menos prioridad que el VIO: dibujar en la tablet puede esperar, el filtro no
+Nice=10
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

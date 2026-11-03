@@ -1,3 +1,7 @@
+# Los scripts de bash y los servicios de systemd, siempre con finales de línea de Linux (LF)
+*.sh      text eol=lf
+*.service text eol=lf
+
 # Python
 __pycache__/
 *.py[cod]
