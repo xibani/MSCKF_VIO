@@ -230,3 +230,86 @@ def observar_puntos(R_c_w, t_c_w, puntos_w, K, tamano, profundidad_min, ruido_px
     uv = np.column_stack([u, v]) + rng.normal(0.0, ruido_px, (len(ids), 2))
     xy = np.column_stack([(uv[:, 0] - K[0, 2]) / K[0, 0], (uv[:, 1] - K[1, 2]) / K[1, 1]])
     return ids, uv, xy
+
+
+
+
+# ---------------------------------------------------------------------
+# Paso 11.4 — Secuencia completa y pistas
+# ---------------------------------------------------------------------
+def generar_secuencia(cfg_vio, K, tamano, rng):
+    """Una secuencia VIO simulada completa, con verdad.
+
+    cfg_vio: sección "vio" de config/simulador.yaml. K, tamano: intrínsecos de la cámara.
+    Devuelve: dict con
+        imu:     t_ns (N,), w (N, 3), a (N, 3)           <- como euroc.leer_imu
+        obs:     t_ns, imagen, id (V,), uv, xy (V, 2)    <- una fila por observación
+        camaras: t_ns, indice_imu (C,), R_c_w (C, 3, 3), t_c_w (C, 3)   (verdad)
+        verdad:  t_ns, R_w_i, v_w, p_w, b_g, b_a          (en los instantes de la IMU)
+        puntos (P, 3), R_c_i (3, 3), t_c_i (3,)
+    """
+    tr_cfg, imu_cfg, cam_cfg = cfg_vio["trayectoria"], cfg_vio["imu"], cfg_vio["camara"]
+    f_imu = tr_cfg["frecuencia_imu_hz"]
+    if f_imu % cam_cfg["frecuencia_hz"] != 0:
+        raise ValueError("La frecuencia de la IMU debe ser múltiplo de la de la cámara")
+
+    # 1. Trayectoria verdadera e IMU
+    t_ns = tiempos_ns(tr_cfg["duracion_s"], f_imu)
+    tr = imu_ideal(lambda t: pose_vio(t, tr_cfg), t_ns / 1e9, tr_cfg["paso_derivadas_s"])
+    w_m, a_m, b_g, b_a = imu_con_ruido(tr, imu_cfg, f_imu, rng)
+
+    # 2. Mundo y extrínseca
+    puntos = puntos_habitacion(cfg_vio["mundo"]["habitacion_m"],
+                               cfg_vio["mundo"]["puntos_por_superficie"], rng)
+    R_c_i, t_c_i = extrinseca(cam_cfg)
+
+    # 3. Una imagen cada f_imu / f_cam muestras de IMU
+    indices_imu = np.arange(0, len(t_ns), f_imu // cam_cfg["frecuencia_hz"])
+    R_c_w = np.zeros((len(indices_imu), 3, 3))
+    t_c_w = np.zeros((len(indices_imu), 3))
+    obs = {"t_ns": [], "imagen": [], "id": [], "uv": [], "xy": []}
+    for j, k in enumerate(indices_imu):
+        R_c_w[j], t_c_w[j] = pose_camara(tr["R_w_i"][k], tr["p_w"][k], R_c_i, t_c_i)
+        ids, uv, xy = observar_puntos(R_c_w[j], t_c_w[j], puntos, K, tamano,
+                                      cam_cfg["profundidad_min_m"], cam_cfg["ruido_px"], rng)
+        obs["t_ns"].append(np.full(len(ids), t_ns[k], dtype=np.int64))
+        obs["imagen"].append(np.full(len(ids), j))
+        obs["id"].append(ids)
+        obs["uv"].append(uv)
+        obs["xy"].append(xy)
+    obs = {clave: np.concatenate(valores) for clave, valores in obs.items()}
+
+    return {
+        "imu": {"t_ns": t_ns, "w": w_m, "a": a_m},
+        "obs": obs,
+        "camaras": {"t_ns": t_ns[indices_imu], "indice_imu": indices_imu, "R_c_w": R_c_w, "t_c_w": t_c_w},
+        "verdad": {"t_ns": t_ns, "R_w_i": tr["R_w_i"], "v_w": tr["v_w"], "p_w": tr["p_w"],
+                   "b_g": b_g, "b_a": b_a},
+        "puntos": puntos, "R_c_i": R_c_i, "t_c_i": t_c_i,
+    }
+
+
+def pistas_desde_observaciones(obs):
+    """Convierte las observaciones en Pistas, como las que entrega el front-end (etapa 8).
+
+    Un punto que sale de la imagen y vuelve a entrar da DOS pistas: el front-end real
+    también lo perdería y lo detectaría de nuevo como un punto nuevo.
+    Devuelve: (pistas, punto_de_pista): lista de Pista y dict id de pista -> id de punto.
+    """
+    from vio.frontend import Pista          # aquí dentro: el front-end solo hace falta para esto
+
+    pistas = []
+    punto_de_pista = {}
+    for id_punto in np.unique(obs["id"]):
+        # 1. Observaciones de este punto, ordenadas por imagen
+        filas = np.flatnonzero(obs["id"] == id_punto)
+        filas = filas[np.argsort(obs["imagen"][filas])]
+        # 2. Cortar donde falta alguna imagen intermedia
+        pista = None
+        for f in filas:
+            if pista is None or obs["imagen"][f] != pista.imagenes[-1] + 1:
+                pista = Pista(id=len(pistas))
+                pistas.append(pista)
+                punto_de_pista[pista.id] = int(id_punto)
+            pista.anadir(int(obs["imagen"][f]), int(obs["t_ns"][f]), obs["uv"][f], obs["xy"][f])
+    return pistas, punto_de_pista

@@ -157,3 +157,62 @@ def test_observar_puntos():
     ids2, uv2, _ = sim.observar_puntos(R_c_w, t_c_w, puntos, K, TAMANO, 0.2, 1.0, rng)
     assert (ids2 == ids).all()
     assert (uv2 - uv).std() == pytest.approx(1.0, rel=0.15)
+
+
+
+# =====================================================================
+# Paso 11.4
+# =====================================================================
+@pytest.fixture(scope="module")
+def secuencia_sin_ruido_visual():
+    """Secuencia de 10 s sin ruido en la cámara (una sola vez para todos los tests)."""
+    cfg = copy.deepcopy(CFG)
+    cfg["trayectoria"]["duracion_s"] = 10.0
+    cfg["camara"]["ruido_px"] = 0.0
+    return sim.generar_secuencia(cfg, K, TAMANO, np.random.default_rng(5))
+
+
+def test_generar_secuencia(secuencia_sin_ruido_visual):
+    s = secuencia_sin_ruido_visual
+    f_imu, f_cam = TR["frecuencia_imu_hz"], CFG["camara"]["frecuencia_hz"]
+    assert len(s["imu"]["t_ns"]) == 10 * f_imu + 1 and s["imu"]["t_ns"].dtype == np.int64
+    assert len(s["camaras"]["t_ns"]) == 10 * f_cam + 1
+    # Cada imagen coincide con una muestra de IMU, cada f_imu / f_cam muestras
+    assert (np.diff(s["camaras"]["indice_imu"]) == f_imu // f_cam).all()
+    assert (s["imu"]["t_ns"][s["camaras"]["indice_imu"]] == s["camaras"]["t_ns"]).all()
+    # Todas las observaciones son de instantes de cámara, con muchos puntos por imagen
+    assert np.isin(s["obs"]["t_ns"], s["camaras"]["t_ns"]).all()
+    assert np.bincount(s["obs"]["imagen"]).min() > 50
+
+
+def test_triangular_con_poses_verdaderas_recupera_los_puntos(secuencia_sin_ruido_visual):
+    # Cruza tres módulos: simulador (etapa 11), pistas (etapa 8) y triangulación (etapa 9)
+    from vio import triangulacion as tri
+    s = secuencia_sin_ruido_visual
+    cfg_tri = cargar_config("triangulacion")
+    pistas, punto_de_pista = sim.pistas_desde_observaciones(s["obs"])
+    largas = [p for p in pistas if p.longitud() >= 5][::10]   # una de cada 10: basta y es más rápido
+    fiables = 0
+    for pista in largas:
+        poses = [(s["camaras"]["R_c_w"][j], s["camaras"]["t_c_w"][j]) for j in pista.imagenes]
+        r = tri.triangular(poses, pista.xy, cfg_tri, K[0, 0])
+        if r["fiable"]:
+            fiables += 1
+            assert np.linalg.norm(r["p_w"] - s["puntos"][punto_de_pista[pista.id]]) < 1e-9
+    assert fiables / len(largas) > 0.8
+
+
+def test_pistas_desde_observaciones(secuencia_sin_ruido_visual):
+    obs = secuencia_sin_ruido_visual["obs"]
+    pistas, punto_de_pista = sim.pistas_desde_observaciones(obs)
+    # No se pierde ni se repite ninguna observación
+    assert sum(p.longitud() for p in pistas) == len(obs["id"])
+    # Cada pista: imágenes consecutivas, ids de pista únicos
+    for p in pistas:
+        assert (np.diff(p.imagenes) == 1).all()
+    assert len({p.id for p in pistas}) == len(pistas)
+    # Lo guardado en la pista coincide con la observación original
+    p = pistas[0]
+    fila = np.flatnonzero((obs["id"] == punto_de_pista[p.id]) & (obs["imagen"] == p.imagenes[0]))[0]
+    assert p.xy[0] == pytest.approx(tuple(obs["xy"][fila]))
+    assert p.t_ns[0] == obs["t_ns"][fila]
