@@ -71,3 +71,29 @@ def leer_paquete(datos):
         return {"version": version, "t_ns": campos[1],
                 "R_w_i": np.array(campos[2:11]).reshape(3, 3), "p_w": np.array(campos[11:14])}
     raise ValueError(f"versión de protocolo {version} desconocida")
+
+
+
+# =====================================================================
+# Etapa 14 — Imagen con sus pistas (en otro puerto: no se mezcla con la pose)
+# =====================================================================
+VERSION_IMAGEN = 3
+FORMATO_CABECERA_IMAGEN = "<Bq"                                  # versión + t_ns
+TAMANO_CABECERA_IMAGEN = struct.calcsize(FORMATO_CABECERA_IMAGEN)  # 9 bytes
+MAX_BYTES_UDP = 65507                                            # carga máxima de un datagrama UDP (IPv4)
+MAX_BYTES_JPEG = MAX_BYTES_UDP - TAMANO_CABECERA_IMAGEN
+
+
+def empaquetar_imagen(t_ns, jpeg):
+    """Cabecera (versión 3, t_ns) + los bytes de un JPEG. Lanza ValueError si no cabe."""
+    if len(jpeg) > MAX_BYTES_JPEG:
+        raise ValueError(f"JPEG de {len(jpeg)} bytes: no cabe en un paquete UDP ({MAX_BYTES_JPEG})")
+    return struct.pack(FORMATO_CABECERA_IMAGEN, VERSION_IMAGEN, int(t_ns)) + bytes(jpeg)
+
+
+def leer_imagen(datos):
+    """Inversa de empaquetar_imagen. Devuelve: (t_ns, bytes del JPEG)."""
+    if len(datos) <= TAMANO_CABECERA_IMAGEN or datos[0] != VERSION_IMAGEN:
+        raise ValueError("no es un paquete de imagen (versión 3)")
+    _, t_ns = struct.unpack(FORMATO_CABECERA_IMAGEN, datos[:TAMANO_CABECERA_IMAGEN])
+    return t_ns, datos[TAMANO_CABECERA_IMAGEN:]

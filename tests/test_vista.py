@@ -111,3 +111,25 @@ def test_codificar_jpeg_baja_la_calidad_si_no_cabe():
     jpeg = vista_vio.codificar_jpeg(ruido, 70, tamano_70 - 1)
     assert jpeg is not None and len(jpeg) < tamano_70                # ha bajado la calidad
     assert vista_vio.codificar_jpeg(ruido, 70, 1000) is None          # ni con calidad 20 cabe
+
+
+
+# =====================================================================
+# Paso 14.2 — vio/protocolo.py (paquete de imagen, versión 3)
+# =====================================================================
+def test_paquete_imagen_ida_y_vuelta():
+    jpeg = bytes(range(256)) * 10
+    datos = protocolo.empaquetar_imagen(123456789012, jpeg)
+    assert len(datos) == protocolo.TAMANO_CABECERA_IMAGEN + len(jpeg) and datos[0] == 3
+    assert protocolo.leer_imagen(datos) == (123456789012, jpeg)
+    # Un JPEG del tamaño máximo cabe justo en un datagrama UDP
+    assert len(protocolo.empaquetar_imagen(0, b"x" * protocolo.MAX_BYTES_JPEG)) == protocolo.MAX_BYTES_UDP
+
+
+def test_paquete_imagen_rechazos():
+    with pytest.raises(ValueError):
+        protocolo.empaquetar_imagen(0, b"x" * (protocolo.MAX_BYTES_JPEG + 1))
+    with pytest.raises(ValueError):                                   # un paquete de pose (v2) no es imagen
+        protocolo.leer_imagen(protocolo.empaquetar_pose(0, np.eye(3), np.zeros(3)))
+    with pytest.raises(ValueError):                                   # solo la cabecera, sin JPEG
+        protocolo.leer_imagen(protocolo.empaquetar_imagen(0, b""))
