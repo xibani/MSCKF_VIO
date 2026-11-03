@@ -80,3 +80,70 @@ def simular(cfg, rng):
 
     return {"t_s": t_s, "x": x, "u": u, "con_medida": con_medida, "z": z,
             "x0_est": x0_est, "P0": P0}
+
+
+# =====================================================================
+# Paso 10.2 — Predicción y corrección
+# =====================================================================
+def ruido_proceso(B, sigma_a):
+    """Q: covarianza que añade al estado el ruido del acelerómetro en un paso.
+
+    El filtro usa u = a + n, con n de varianza sigma_a². Ese n entra en el estado
+    como B·n, cuya covarianza es B · sigma_a² · Bᵀ.
+    """
+    return np.outer(B, B) * sigma_a ** 2
+
+
+def predecir(x, P, u, F, B, Q):
+    """Paso de predicción: avanzar el estado con la lectura del acelerómetro.
+
+    x (2,), P (2, 2), u [m/s²]. Devuelve (x, P) predichos. La incertidumbre crece.
+    """
+    x = F @ x + B * u
+    P = F @ P @ F.T + Q
+    return x, P
+
+
+def corregir(x, P, z, R):
+    """Paso de corrección con una medida de posición z [m] de varianza R [m²].
+
+    Devuelve (x, P, y, S): estado y covarianza corregidos, innovación y su covarianza.
+    P se actualiza con la forma de Joseph, que la mantiene simétrica y positiva.
+    """
+    # 1. Innovación: lo que la medida dice y la predicción no esperaba
+    y = z - (H @ x)[0]
+    # 2. Covarianza de la innovación: incertidumbre de la predicción + la de la medida
+    S = (H @ P @ H.T)[0, 0] + R
+    # 3. Ganancia: cuánto de la innovación se cree, y cómo se reparte entre p y v
+    K = (P @ H.T)[:, 0] / S                            # (2,)
+    # 4. Estado corregido
+    x = x + K * y
+    # 5. Covarianza corregida (forma de Joseph)
+    I_KH = np.eye(2) - np.outer(K, H[0])
+    P = I_KH @ P @ I_KH.T + np.outer(K, K) * R
+    return x, P, y, S
+
+
+def ejecutar_filtro(sim, cfg, factor_q=1.0, factor_r=1.0):
+    """Pasa el filtro por una simulación.
+
+    factor_q, factor_r: multiplican Q y R que USA el filtro (los datos no cambian).
+        Sirven para ver qué pasa cuando el filtro se equivoca sobre sus ruidos.
+    Devuelve: (x_est (N+1, 2), P_est (N+1, 2, 2)).
+    """
+    dt = sim["t_s"][1] - sim["t_s"][0]
+    F, B = matrices(dt)
+    Q = ruido_proceso(B, cfg["ruido"]["sigma_a"]) * factor_q
+    R = cfg["ruido"]["sigma_z"] ** 2 * factor_r
+
+    n = len(sim["u"])
+    x_est = np.zeros((n + 1, 2))
+    P_est = np.zeros((n + 1, 2, 2))
+    x, P = sim["x0_est"].copy(), sim["P0"].copy()
+    x_est[0], P_est[0] = x, P
+    for k in range(1, n + 1):
+        x, P = predecir(x, P, sim["u"][k - 1], F, B, Q)
+        if sim["con_medida"][k]:
+            x, P, _, _ = corregir(x, P, sim["z"][k], R)
+        x_est[k], P_est[k] = x, P
+    return x_est, P_est
