@@ -9,5 +9,3 @@ Todo se ejecuta desde la raíz del proyecto, con el entorno virtual activo (ataj
 
     python -m pytest                       # todos los tests
     python -m herramientas.info_entorno    # comprobar el entorno
-
-Test pc
