@@ -46,3 +46,30 @@ def test_por_un_socket_udp_real():
     finally:
         emisor.close()
         receptor.close()
+
+
+
+# =====================================================================
+# Etapa 13 — Versión 2: pose
+# =====================================================================
+def test_pose_tamano_e_ida_y_vuelta():
+    assert protocolo.TAMANO_POSE == 105
+    R, p = so3.exp_so3([0.3, -0.1, 2.0]), np.array([1.25, -0.5, 0.75])
+    paquete = protocolo.empaquetar_pose(987_654_321, R, p)
+    assert len(paquete) == 105 and paquete[0] == 2
+    leido = protocolo.leer_paquete(paquete)
+    assert leido["version"] == 2 and leido["t_ns"] == 987_654_321
+    assert np.array_equal(leido["R_w_i"], R) and np.array_equal(leido["p_w"], p)
+
+
+def test_leer_paquete_entiende_la_version_1():
+    R = so3.exp_so3([0.0, 0.2, 0.0])
+    leido = protocolo.leer_paquete(protocolo.empaquetar(5, R))
+    assert leido["version"] == 1 and leido["p_w"] is None and np.array_equal(leido["R_w_i"], R)
+
+
+def test_leer_paquete_rechaza_lo_incorrecto():
+    paquete = protocolo.empaquetar_pose(0, np.eye(3), np.zeros(3))
+    for malo in (b"", paquete[:-1], bytes([7]) + paquete[1:]):
+        with pytest.raises(ValueError):
+            protocolo.leer_paquete(malo)

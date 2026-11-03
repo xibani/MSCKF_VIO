@@ -18,3 +18,6 @@ visor:
   intervalo_refresco_ms: 50   # cada cuánto se redibuja
   timeout_sin_datos_s: 1.0    # sin paquetes durante más de esto: "SIN DATOS"
   semiejes_caja: [1.0, 0.6, 0.12]   # medidas del dibujo de la placa (x, y, z), sin unidades
+  escala_caja_pose_m: 0.15    # etapa 13: con posición, la placa se dibuja de este tamaño [m]
+  trayectoria_max: 3000       # etapa 13: últimas posiciones que se dibujan (150 s a 20 Hz)
+  margen_m: 0.5               # etapa 13: espacio alrededor de la trayectoria en los ejes
