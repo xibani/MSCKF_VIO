@@ -1,0 +1,20 @@
+# config/kalman_1d.yaml — Etapa 10: filtro de Kalman de juguete (carrito en una recta)
+
+simulacion:
+  frecuencia_hz: 100           # acelerómetro, como la IMU
+  duracion_s: 10.0
+  cada_n_medida: 10            # una medida de posición cada 10 pasos: 10 Hz, como la cámara
+  aceleracion_amplitud: 0.5    # aceleración verdadera A · sen(omega · t) [m/s²]
+  aceleracion_omega: 1.0       # [rad/s]
+
+ruido:
+  sigma_a: 0.05                # ruido del acelerómetro en cada muestra [m/s²]
+  sigma_z: 0.02                # ruido de la medida de posición [m]
+
+inicial:
+  sigma_p0: 0.1                # incertidumbre inicial de la posición [m]
+  sigma_v0: 0.1                # incertidumbre inicial de la velocidad [m/s]
+
+consistencia:
+  simulaciones: 200            # repeticiones independientes para medir el NEES
+  confianza: 0.95              # nivel del intervalo del NEES medio
