@@ -3,19 +3,24 @@ apps/visor_web.py — Visor de la VIO en el navegador (tablet, móvil o PC).
 
 Idea:
     pi_vio / pi_orientacion  --UDP 127.0.0.1:5005-->  visor_web (este programa, en la Pi)
+    pi_vio (imagen + pistas) --UDP 127.0.0.1:5006-->  visor_web
     visor_web  --HTTP + Server-Sent Events (puerto 8000)-->  navegador de la tablet
+    visor_web  --HTTP, vídeo MJPEG (/video)-->  navegador de la tablet
 
 La Pi ya no dibuja nada: este proceso solo recibe los paquetes UDP, los decodifica
 y reenvía la pose como texto JSON unas 15 veces por segundo. El dibujo lo hace el
 navegador de la tablet con <canvas>.
 
 No cambia el protocolo: lee exactamente los mismos paquetes v1 ('<Bq9d', 81 bytes)
-y v2 ('<Bq9d3d', 105 bytes) que vio/protocolo.py. Solo usa la biblioteca estándar.
+y v2 ('<Bq9d3d', 105 bytes) que vio/protocolo.py, y las imágenes de la versión 3
+('<Bq' + JPEG, etapa 14). Solo usa la biblioteca estándar: el JPEG llega ya comprimido
+y se reenvía tal cual, sin decodificarlo.
 
 Uso (en la Pi, con el venv activo, desde la raíz del proyecto):
     python -m apps.visor_web
     python -m apps.pi_vio --ip 127.0.0.1
 y en la tablet abre:  http://<IP de la Pi>:8000
+Para que arranquen solos al encender la Pi: bash sistema/instalar_servicios.sh instalar
 
 No se puede ejecutar a la vez que apps.pc_visor en la misma máquina: los dos
 escuchan en el puerto UDP 5005.
@@ -24,6 +29,7 @@ escuchan en el puerto UDP 5005.
 import argparse
 import json
 import math
+import signal
 import socket
 import struct
 import threading
@@ -42,6 +48,12 @@ TAM_V2 = struct.calcsize(FORMATO_V2)   # 105 bytes
 # Máximo de puntos de trayectoria que se mandan al navegador en cada mensaje.
 # Si la tablet se conecta tarde, recibe la trayectoria antigua en trozos.
 MAX_PUNTOS_POR_MENSAJE = 2000
+
+# Imágenes (etapa 14): copia literal de vio/protocolo.py
+FORMATO_CABECERA_IMAGEN = "<Bq"            # versión (3) + t_ns, y detrás los bytes del JPEG
+TAM_CABECERA_IMAGEN = struct.calcsize(FORMATO_CABECERA_IMAGEN)   # 9 bytes
+VERSION_IMAGEN = 3
+PERIODO_VIDEO_S = 0.03                     # cada cuánto mira el vídeo si hay imagen nueva
 
 
 def decodificar_paquete(datos):
@@ -72,6 +84,14 @@ def decodificar_paquete(datos):
     return version, t_ns, R, p
 
 
+def decodificar_imagen(datos):
+    """Devuelve (t_ns, jpeg) de un paquete de imagen. Lanza ValueError si no lo es."""
+    if len(datos) <= TAM_CABECERA_IMAGEN or datos[0] != VERSION_IMAGEN:
+        raise ValueError("no es un paquete de imagen (versión 3)")
+    _, t_ns = struct.unpack(FORMATO_CABECERA_IMAGEN, datos[:TAM_CABECERA_IMAGEN])
+    return t_ns, datos[TAM_CABECERA_IMAGEN:]
+
+
 def todos_finitos(valores):
     """True si ningún valor es NaN o infinito (JSON no admite NaN)."""
     for v in valores:
@@ -96,6 +116,10 @@ class EstadoCompartido:
         self.recibidos = 0
         self.invalidos = 0
         self.no_finitos = 0
+        # Etapa 14: la última imagen con sus pistas
+        self.jpeg = None           # bytes del último JPEG, o None
+        self.id_jpeg = 0           # aumenta con cada imagen nueva
+        self.imagenes = 0          # imágenes recibidas
 
 
 def bucle_udp(sock, estado, parar):
@@ -142,8 +166,27 @@ def bucle_udp(sock, estado, parar):
                 estado.trayectoria.append(p)
 
 
+def bucle_imagenes(sock, estado, parar):
+    """Hilo que recibe las imágenes (etapa 14) y guarda solo la última."""
+    while not parar.is_set():
+        try:
+            datos, _origen = sock.recvfrom(65536)          # un JPEG cabe en un paquete
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        try:
+            _t_ns, jpeg = decodificar_imagen(datos)
+        except (ValueError, struct.error):
+            continue
+        with estado.cerrojo:
+            estado.jpeg = jpeg
+            estado.id_jpeg += 1
+            estado.imagenes += 1
+
+
 # ---------------------------------------------------------------------------
-# Servidor HTTP: página + flujo de eventos
+# Servidor HTTP: página + flujo de eventos + vídeo
 # ---------------------------------------------------------------------------
 class ManejadorHTTP(BaseHTTPRequestHandler):
     # Se rellenan en main() antes de arrancar el servidor
@@ -159,6 +202,10 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
             self.enviar_pagina()
         elif self.path == "/eventos":
             self.enviar_eventos()
+        elif self.path.startswith("/video"):
+            self.enviar_video()
+        elif self.path.startswith("/foto"):
+            self.enviar_foto()
         else:
             self.send_error(404)
 
@@ -212,6 +259,7 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
                         "recibidos": estado.recibidos,
                         "invalidos": estado.invalidos,
                         "no_finitos": estado.no_finitos,
+                        "imagenes": estado.imagenes,
                     }
 
                 texto = "data: " + json.dumps(mensaje) + "\n\n"
@@ -221,6 +269,50 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             # La tablet ha cerrado la pestaña o se ha perdido la Wi-Fi
             return
+
+
+    def enviar_video(self):
+        """Vídeo MJPEG: una respuesta que no termina, con un JPEG tras otro separados por
+        una frontera. Los navegadores lo muestran directamente en un <img>."""
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=fotograma")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        estado = self.estado
+        ultimo_id = -1
+        try:
+            self.wfile.write(b"--fotograma\r\n")
+            while True:
+                with estado.cerrojo:
+                    jpeg, id_jpeg = estado.jpeg, estado.id_jpeg
+                if jpeg is not None and id_jpeg != ultimo_id:      # solo cuando hay imagen nueva
+                    ultimo_id = id_jpeg
+                    cabecera = "Content-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg)
+                    self.wfile.write(cabecera.encode("ascii"))
+                    self.wfile.write(jpeg)
+                    # La frontera va DETRÁS de cada imagen: el navegador muestra una imagen
+                    # cuando ve la frontera que la cierra (si fuera delante, la última
+                    # imagen no se vería hasta que llegase la siguiente)
+                    self.wfile.write(b"\r\n--fotograma\r\n")
+                    self.wfile.flush()
+                time.sleep(PERIODO_VIDEO_S)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return
+
+    def enviar_foto(self):
+        """La última imagen, sola (para comprobar desde el navegador o con curl)."""
+        with self.estado.cerrojo:
+            jpeg = self.estado.jpeg
+        if jpeg is None:
+            self.send_error(503, "Aún no ha llegado ninguna imagen")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(jpeg)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(jpeg)
 
 
 def ip_local_probable():
@@ -235,15 +327,25 @@ def ip_local_probable():
         s.close()
 
 
+def terminar_con_sigterm():
+    """Que SIGTERM ("systemctl stop") cierre el servidor igual que Ctrl+C."""
+    def manejador(_senal, _marco):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, manejador)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visor web de la VIO (para tablet)")
     parser.add_argument("--puerto-udp", type=int, default=5005,
                         help="puerto donde llegan los paquetes de pi_vio (5005)")
+    parser.add_argument("--puerto-imagen", type=int, default=5006,
+                        help="puerto donde llegan las imágenes con pistas de pi_vio (5006)")
     parser.add_argument("--puerto-web", type=int, default=8000,
                         help="puerto HTTP para el navegador (8000)")
     parser.add_argument("--hz", type=float, default=15.0,
                         help="mensajes por segundo hacia el navegador (15)")
     args = parser.parse_args()
+    terminar_con_sigterm()
 
     estado = EstadoCompartido()
     parar = threading.Event()
@@ -261,13 +363,25 @@ def main():
     hilo_udp = threading.Thread(target=bucle_udp, args=(sock, estado, parar), daemon=True)
     hilo_udp.start()
 
+    # 1b) Segundo socket para las imágenes (etapa 14)
+    sock_img = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock_img.bind(("0.0.0.0", args.puerto_imagen))
+    except OSError as e:
+        print("ERROR: no puedo escuchar en UDP %d (%s)." % (args.puerto_imagen, e))
+        return
+    sock_img.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)   # 1 MB: varias imágenes en espera
+    sock_img.settimeout(0.5)
+    hilo_img = threading.Thread(target=bucle_imagenes, args=(sock_img, estado, parar), daemon=True)
+    hilo_img.start()
+
     # 2) Servidor HTTP (un hilo por navegador conectado)
     ManejadorHTTP.estado = estado
     ManejadorHTTP.periodo_envio = 1.0 / args.hz
     servidor = ThreadingHTTPServer(("0.0.0.0", args.puerto_web), ManejadorHTTP)
 
     ip = ip_local_probable()
-    print("Escuchando UDP en el puerto %d." % args.puerto_udp)
+    print("Escuchando UDP en los puertos %d (pose) y %d (imágenes)." % (args.puerto_udp, args.puerto_imagen))
     if ip:
         print("Abre en la tablet:  http://%s:%d" % (ip, args.puerto_web))
     else:
@@ -282,6 +396,7 @@ def main():
         parar.set()
         servidor.server_close()
         sock.close()
+        sock_img.close()
         print("Visor web detenido.")
 
 
@@ -308,6 +423,8 @@ PAGINA_HTML = r"""<!doctype html>
   .panel { background: #1c1c1c; border-radius: 6px; padding: 6px; }
   .panel h2 { margin: 0 0 4px; font-size: 14px; font-weight: normal; color: #aaa; }
   canvas { width: 100%; aspect-ratio: 1 / 1; display: block; }
+  #video { width: 100%; aspect-ratio: 4 / 3; display: block; background: #000; object-fit: contain; }
+  .panel.ancho { grid-column: 1 / -1; }
 </style>
 </head>
 <body>
@@ -316,6 +433,7 @@ PAGINA_HTML = r"""<!doctype html>
   <span id="texto_pose">—</span>
 </div>
 <div id="paneles">
+  <div class="panel ancho"><h2>Cámara y pistas (rojo: recién detectada → verde: seguida 20 imágenes o más)</h2><img id="video" alt="Esperando imágenes de pi_vio…"></div>
   <div class="panel"><h2>Planta X–Y [m] (flecha roja: eje x de la IMU)</h2><canvas id="lienzo_xy"></canvas></div>
   <div class="panel"><h2>Alzado X–Z [m]</h2><canvas id="lienzo_xz"></canvas></div>
   <div class="panel"><h2>Orientación: ejes de la IMU en el mundo (x rojo, y verde, z azul)</h2><canvas id="lienzo_ori"></canvas></div>
@@ -355,6 +473,13 @@ fuente.onmessage = function (evento) {
 
 fuente.onerror = function () {
   ponerEstado("SIN CONEXIÓN CON LA PI", "mal");
+};
+
+// El vídeo (etapa 14): un <img> con MJPEG NO se reconecta solo si se corta (Pi reiniciada).
+// Cada vez que el flujo de eventos (re)conecta, se vuelve a pedir /video; el ?t= distinto
+// obliga al navegador a abrir una conexión nueva en vez de quedarse con la imagen vieja.
+fuente.onopen = function () {
+  document.getElementById("video").src = "/video?t=" + Date.now();
 };
 
 // Si la Pi deja de mandar mensajes (proceso caído) lo indicamos
@@ -404,6 +529,7 @@ function actualizarCabecera() {
   if (m.invalidos > 0) texto += "  inválidos=" + m.invalidos;
   if (m.no_finitos > 0) texto += "  NaN=" + m.no_finitos;
   texto += "  puntos=" + trayectoria.length;
+  if (m.imagenes !== undefined) texto += "  imágenes=" + m.imagenes;
   document.getElementById("texto_pose").textContent = texto;
 }
 

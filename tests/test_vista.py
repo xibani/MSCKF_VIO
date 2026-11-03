@@ -161,3 +161,99 @@ def test_enviar_imagen_llega_y_se_decodifica():
     finally:
         emisor.close()
         receptor.close()
+
+
+
+
+# =====================================================================
+# Paso 14.4 — apps/visor_web.py (recepción y servidor)
+# =====================================================================
+def test_visor_web_usa_el_mismo_formato_que_protocolo():
+    # visor_web solo usa la biblioteca estándar: tiene su copia de las constantes
+    assert visor_web.FORMATO_CABECERA_IMAGEN == protocolo.FORMATO_CABECERA_IMAGEN
+    assert visor_web.VERSION_IMAGEN == protocolo.VERSION_IMAGEN
+    datos = protocolo.empaquetar_imagen(987, b"\xff\xd8 jpeg \xff\xd9")
+    assert visor_web.decodificar_imagen(datos) == protocolo.leer_imagen(datos)
+    with pytest.raises(ValueError):
+        visor_web.decodificar_imagen(protocolo.empaquetar_pose(0, np.eye(3), np.zeros(3)))
+
+
+def test_bucle_imagenes_guarda_la_ultima():
+    estado, parar = visor_web.EstadoCompartido(), threading.Event()
+    receptor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receptor.bind(("127.0.0.1", 0))
+    receptor.settimeout(0.1)
+    hilo = threading.Thread(target=visor_web.bucle_imagenes, args=(receptor, estado, parar), daemon=True)
+    hilo.start()
+    emisor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for k in range(3):
+            emisor.sendto(protocolo.empaquetar_imagen(k, b"jpeg %d" % k), receptor.getsockname())
+        emisor.sendto(b"basura", receptor.getsockname())              # se ignora
+        time.sleep(0.3)
+        with estado.cerrojo:
+            assert estado.imagenes == 3 and estado.id_jpeg == 3 and estado.jpeg == b"jpeg 2"
+    finally:
+        parar.set()
+        hilo.join(timeout=1.0)
+        emisor.close()
+        receptor.close()
+
+
+@pytest.fixture
+def servidor_web():
+    """visor_web en un puerto libre, en un hilo. Devuelve (estado, puerto)."""
+    estado = visor_web.EstadoCompartido()
+    anterior = visor_web.ManejadorHTTP.estado
+    visor_web.ManejadorHTTP.estado = estado
+    servidor = ThreadingHTTPServer(("127.0.0.1", 0), visor_web.ManejadorHTTP)
+    servidor.daemon_threads = True
+    hilo = threading.Thread(target=servidor.serve_forever, daemon=True)
+    hilo.start()
+    yield estado, servidor.server_address[1]
+    servidor.shutdown()
+    servidor.server_close()
+    visor_web.ManejadorHTTP.estado = anterior
+
+
+def test_foto(servidor_web):
+    estado, puerto = servidor_web
+    conexion = http.client.HTTPConnection("127.0.0.1", puerto, timeout=2.0)
+    conexion.request("GET", "/foto")
+    assert conexion.getresponse().status == 503                     # aún no hay imagen
+    conexion.close()
+    with estado.cerrojo:
+        estado.jpeg, estado.id_jpeg = b"\xff\xd8 una imagen \xff\xd9", 1
+    conexion = http.client.HTTPConnection("127.0.0.1", puerto, timeout=2.0)
+    conexion.request("GET", "/foto")
+    respuesta = conexion.getresponse()
+    assert respuesta.status == 200 and respuesta.getheader("Content-Type") == "image/jpeg"
+    assert respuesta.read() == b"\xff\xd8 una imagen \xff\xd9"
+    conexion.close()
+
+
+def test_video_mjpeg(servidor_web):
+    estado, puerto = servidor_web
+    jpeg = b"\xff\xd8 fotograma \xff\xd9"
+    with estado.cerrojo:
+        estado.jpeg, estado.id_jpeg = jpeg, 1
+    conexion = http.client.HTTPConnection("127.0.0.1", puerto, timeout=2.0)
+    conexion.request("GET", "/video")
+    respuesta = conexion.getresponse()
+    assert respuesta.status == 200
+    assert respuesta.getheader("Content-Type") == "multipart/x-mixed-replace; boundary=fotograma"
+    # Frontera inicial, cabecera de la parte, el JPEG y la frontera que lo cierra
+    esperado = (b"--fotograma\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg)
+                + jpeg + b"\r\n--fotograma\r\n")
+    assert respuesta.read(len(esperado)) == esperado
+    conexion.close()
+
+
+def test_pagina_tiene_el_panel_de_video(servidor_web):
+    _, puerto = servidor_web
+    conexion = http.client.HTTPConnection("127.0.0.1", puerto, timeout=2.0)
+    conexion.request("GET", "/")
+    html = conexion.getresponse().read().decode("utf-8")
+    assert '<img id="video"' in html
+    assert 'fuente.onopen' in html and '"/video?t=" + Date.now()' in html   # se reconecta solo
+    conexion.close()
