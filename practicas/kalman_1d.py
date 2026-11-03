@@ -147,3 +147,41 @@ def ejecutar_filtro(sim, cfg, factor_q=1.0, factor_r=1.0):
             x, P, _, _ = corregir(x, P, sim["z"][k], R)
         x_est[k], P_est[k] = x, P
     return x_est, P_est
+
+
+# =====================================================================
+# Paso 10.3 — Consistencia: NEES
+# =====================================================================
+def nees(e, P):
+    """NEES (Normalized Estimation Error Squared) = eᵀ · P⁻¹ · e.
+
+    e (2,) error real (estimación - verdad), P (2, 2) covarianza que da el filtro.
+    """
+    return e @ np.linalg.solve(P, e)
+
+
+def nees_medio(cfg, rng, factor_q=1.0, factor_r=1.0):
+    """NEES medio en cada instante sobre cfg["consistencia"]["simulaciones"] simulaciones.
+
+    Devuelve: array (N+1,).
+    """
+    n_sim = cfg["consistencia"]["simulaciones"]
+    suma = None
+    for _ in range(n_sim):
+        sim = simular(cfg, rng)
+        x_est, P_est = ejecutar_filtro(sim, cfg, factor_q, factor_r)
+        valores = np.array([nees(x_est[k] - sim["x"][k], P_est[k]) for k in range(len(x_est))])
+        suma = valores if suma is None else suma + valores
+    return suma / n_sim
+
+
+def intervalo_nees(dimension, n_sim, confianza):
+    """Intervalo en el que debe caer el NEES medio de un filtro consistente.
+
+    Si el filtro es consistente, cada NEES sigue una chi-cuadrado con 'dimension' grados
+    de libertad; la suma de n_sim independientes, una chi-cuadrado con dimension·n_sim.
+    Devuelve: (inferior, superior) del NEES MEDIO (la suma dividida por n_sim).
+    """
+    gl = dimension * n_sim
+    cola = (1.0 - confianza) / 2.0
+    return chi2.ppf(cola, gl) / n_sim, chi2.ppf(1.0 - cola, gl) / n_sim

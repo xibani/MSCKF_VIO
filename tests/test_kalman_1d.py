@@ -109,3 +109,36 @@ def test_R_casi_cero_sigue_a_la_medida():
     m = sim["con_medida"]
     assert np.abs(x_est[m, 0] - sim["z"][m]).max() < 1e-6
     assert P_est[m, 0, 0].max() < 1e-12
+
+
+# =====================================================================
+# Paso 10.3
+# =====================================================================
+def test_nees_con_numeros():
+    assert kf.nees(np.array([1.0, 0.0]), np.diag([4.0, 1.0])) == pytest.approx(0.25)
+    assert kf.nees(np.array([2.0, 3.0]), np.eye(2)) == pytest.approx(13.0)
+
+
+def test_intervalo_nees():
+    inferior, superior = kf.intervalo_nees(2, 200, 0.95)
+    assert inferior == pytest.approx(1.73, abs=0.01)
+    assert superior == pytest.approx(2.29, abs=0.01)
+
+
+def test_filtro_consistente():
+    nees = kf.nees_medio(CFG_CORTA, np.random.default_rng(4))[1:]
+    n_sim = CFG["consistencia"]["simulaciones"]
+    inferior, superior = kf.intervalo_nees(2, n_sim, CFG["consistencia"]["confianza"])
+    # 1. El promedio en el tiempo, dentro del intervalo del 95 %
+    assert inferior <= nees.mean() <= superior
+    # 2. Instante a instante, con un intervalo del 99,9 %: casi todos dentro
+    #    (con el del 95 %, un 5 % de instantes caería fuera por puro azar)
+    inf_999, sup_999 = kf.intervalo_nees(2, n_sim, 0.999)
+    assert np.mean((nees >= inf_999) & (nees <= sup_999)) > 0.99
+
+
+def test_Q_diez_veces_menor_dispara_el_nees():
+    nees = kf.nees_medio(CFG_CORTA, np.random.default_rng(5), factor_q=0.1)[1:]
+    _, superior = kf.intervalo_nees(2, CFG["consistencia"]["simulaciones"], 0.999)
+    assert nees.mean() > 3.0
+    assert nees[-1] > superior
