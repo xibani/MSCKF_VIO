@@ -84,9 +84,17 @@ def test_dibujar_vista_con_pistas_y_texto():
 
 
 def test_lineas_estado():
-    assert "INICIALIZANDO" in vista_vio.lineas_estado(SimpleNamespace(filtro=None), None)[0]
-    pipeline = SimpleNamespace(filtro=object())
-    assert "esperando" in vista_vio.lineas_estado(pipeline, None)[0]
+    # 1. Inicializando: cuántas muestras lleva y por qué falló el último intento
+    iniciando = SimpleNamespace(filtro=None, reposo=[0] * 150, intentos=3,
+                                problemas=["|a| = 8.72 m/s², lejos de g: ¿se ha movido?"])
+    lineas = vista_vio.lineas_estado(iniciando, None)
+    assert lineas == ["INICIALIZANDO: deja la placa QUIETA",
+                        "IMU: 150 muestras en reposo, intento 4",
+                        "fallo: |a| = 8.72 m/s², lejos de g: ¿se ha movido?"]
+    # 2. Filtro creado pero sin imagen válida: cuántas se descartan por tiempo
+    pipeline = SimpleNamespace(filtro=object(), descartadas=7)
+    assert vista_vio.lineas_estado(pipeline, None) == ["VIO EN MARCHA (esperando imagen)",
+                                                        "imagenes descartadas por tiempo: 7"]
     r = {"p_w": np.array([0.1, -0.2, 0.3]),
          "frontend": {"activos": 87, "nuevos": 4},
          "msckf": {"usadas": 6, "quieto": True},
@@ -94,6 +102,13 @@ def test_lineas_estado():
     lineas = vista_vio.lineas_estado(pipeline, r)
     assert lineas[0] == "p = (+0.10, -0.20, +0.30) m   QUIETO (ZUPT)"
     assert lineas[1] == "puntos 87  nuevos 4  pistas usadas 6  32 ms"
+
+
+def test_texto_en_ascii():
+    # Las fuentes de OpenCV solo tienen ASCII: "σ", "²" o las tildes saldrían como "??"
+    assert vista_vio.a_ascii("σ = 0.80 °/s, |a| = 8.72 m/s², ¿se ha movido? máx") == \
+        "sigma = 0.80 deg/s, |a| = 8.72 m/s2, se ha movido? max"
+    assert len(vista_vio.a_ascii("x" * 200)) == vista_vio.MAX_CARACTERES
 
 
 def test_codificar_jpeg_cabe_y_se_puede_leer():

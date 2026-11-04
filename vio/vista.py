@@ -6,8 +6,22 @@ Cada pista activa del front-end se dibuja con su "cola" (sus últimas posiciones
 La imagen se comprime en JPEG para que quepa en un solo paquete UDP.
 """
 
+import unicodedata
 import cv2
 import numpy as np
+
+
+# Las fuentes de OpenCV solo tienen ASCII: estos símbolos se escriben con letras
+SUSTITUCIONES_ASCII = {"σ": "sigma", "°": "deg", "²": "2", "¿": "", "¡": "", "→": "->"}
+MAX_CARACTERES = 60           # lo que cabe en una línea de 640 px con la letra de dibujar_vista
+
+
+def a_ascii(texto):
+    """Texto que OpenCV puede dibujar: sin tildes ni símbolos, y como mucho MAX_CARACTERES."""
+    for simbolo, letras in SUSTITUCIONES_ASCII.items():
+        texto = texto.replace(simbolo, letras)
+    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    return texto[:MAX_CARACTERES]
 
 
 def color_por_longitud(longitud, longitud_larga):
@@ -34,20 +48,34 @@ def dibujar_vista(gris, frontend, lineas_texto, cfg_vista):
                 cv2.polylines(vista, [cola.reshape(-1, 1, 2)], False, color, 1)
             cv2.circle(vista, (int(cola[-1][0]), int(cola[-1][1])), 3, color, -1)
 
-    # 2. Texto con fondo oscuro, para que se lea sobre cualquier imagen
+    # 2. Texto blanco sobre un rectángulo negro, para que se lea sobre cualquier imagen.
+    #    (Un contorno negro con trazo grueso no vale: en algunas versiones de OpenCV el trazo
+    #    grueso separa más las letras y el contorno no coincide con el texto)
     for k, linea in enumerate(lineas_texto):
-        y = 20 + 22 * k
-        cv2.putText(vista, linea, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 4, cv2.LINE_AA)
+        y = 20 + 22 * k                                   # línea base del texto
+        linea = a_ascii(linea)
+        (ancho, alto), bajo_linea = cv2.getTextSize(linea, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.rectangle(vista, (4, y - alto - 4), (8 + ancho + 4, y + bajo_linea), (0, 0, 0), -1)
         cv2.putText(vista, linea, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
     return vista
 
 
 def lineas_estado(pipeline, resultado):
-    """Las líneas de texto que acompañan a la imagen."""
+    """Las líneas de texto que acompañan a la imagen.
+
+    Mientras no hay pose, dicen por qué: cuántas muestras de IMU en reposo lleva la
+    inicialización y por qué falló el último intento, o cuántas imágenes se descartan
+    por llegar con una marca de tiempo anterior al filtro.
+    """
     if pipeline.filtro is None:
-        return ["INICIALIZANDO: deja la placa QUIETA"]
+        lineas = ["INICIALIZANDO: deja la placa QUIETA",
+                  f"IMU: {len(pipeline.reposo)} muestras en reposo, intento {pipeline.intentos + 1}"]
+        if pipeline.problemas:
+            lineas.append("fallo: " + pipeline.problemas[0])
+        return lineas
     if resultado is None:
-        return ["VIO EN MARCHA (esperando imagen)"]
+        return ["VIO EN MARCHA (esperando imagen)",
+                f"imagenes descartadas por tiempo: {pipeline.descartadas}"]
     p = resultado["p_w"]
     fe, est = resultado["frontend"], resultado["msckf"]
     estado = "QUIETO (ZUPT)" if est["quieto"] else "en movimiento"

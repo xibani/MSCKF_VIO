@@ -60,8 +60,10 @@ def guardar_calibracion_imu(ruta, sesgo, escala, info):
         yaml.safe_dump(datos, f, allow_unicode=True, sort_keys=False)
 
 
-def cargar_calibracion_imu(nombre="imu_calibracion"):
-    """Lee config/<nombre>.yaml. Devuelve: (sesgo (3,), escala (3,))."""
-    with open(RAIZ_PROYECTO / "config" / f"{nombre}.yaml", encoding="utf-8") as f:
+def cargar_calibracion_imu(nombre="imu_calibracion", ruta=None):
+    """Lee config/<nombre>.yaml (o el archivo `ruta`, si se da). Devuelve: (sesgo (3,), escala (3,))."""
+    if ruta is None:
+        ruta = RAIZ_PROYECTO / "config" / f"{nombre}.yaml"
+    with open(ruta, encoding="utf-8") as f:
         d = yaml.safe_load(f)
     return np.array(d["acc_sesgo_m_s2"]), np.array(d["acc_escala"])

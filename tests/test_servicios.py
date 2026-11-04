@@ -49,7 +49,8 @@ def test_pi_vio_parado_con_sigterm_cierra_bien(tmp_path):
 
     # 2. pi_vio en otro proceso; al ver "VIO EN MARCHA", SIGTERM (lo que hace systemctl stop)
     entorno = dict(os.environ, PYTHONUNBUFFERED="1")
-    proceso = subprocess.Popen([sys.executable, "-m", "apps.pi_vio", "--grabacion", str(tmp_path), "--sin-red"],
+    proceso = subprocess.Popen([sys.executable, "-m", "apps.pi_vio", "--grabacion", str(tmp_path), "--sin-red",
+                                "--sin-calibracion-acc"],
                                cwd=RAIZ_PROYECTO, env=entorno, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, encoding="utf-8")
     lineas = []

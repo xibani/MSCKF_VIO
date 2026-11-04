@@ -180,3 +180,45 @@ def test_vio_de_principio_a_fin_en_una_grabacion_sintetica(tmp_path):
     assert error[quieto].max() < 0.01                         # ZUPT: no deriva mientras está quieto
     assert error.max() < 0.15 and error[-1] < 0.1             # ~3,4 m recorridos
     assert sum(r["msckf"]["usadas"] for r in resultados) > 100
+
+
+# =====================================================================
+# Etapa 15 — Acelerómetro calibrado en el VIO en vivo
+# =====================================================================
+def test_inicializacion_con_acelerometro_descalibrado():
+    # El caso de la Pi 5: placa quieta, pero el acelerómetro mide |a| ≈ 8,7 m/s²
+    rng = np.random.default_rng(4)
+    R_verdad = so3.exp_so3([0.3, -0.2, 0.0])
+    t, w, a = muestras_en_reposo(R_verdad, np.zeros(3), 2.1, rng)
+    sesgo = np.array([0.2, -0.1, -1.09])
+    escala = np.array([1.02, 0.97, 1.0])
+    a_medida = a * escala + sesgo                 # modelo de la etapa 7.2: escala·a + sesgo
+
+    # 1. Sin corregir: nunca arranca, siempre por |a| (el giroscopio dice que está quieta)
+    sin = PipelineVio(K, DIST, R_C_I, T_C_I, 0, CFGS)
+    for t_k, w_k, a_k in zip(t, w, a_medida):
+        sin.nueva_imu(t_k, w_k, a_k)
+    assert sin.filtro is None and len(sin.problemas) == 1 and sin.problemas[0].startswith("|a|")
+
+    # 2. Corrigiendo con la calibración: arranca y la vertical sale bien
+    con = PipelineVio(K, DIST, R_C_I, T_C_I, 0, CFGS, calib_acc=(sesgo, escala))
+    for t_k, w_k, a_k in zip(t, w, a_medida):
+        con.nueva_imu(t_k, w_k, a_k)
+    assert con.filtro is not None and con.problemas == []
+    arriba_estimado, arriba_verdadero = con.filtro.estado.R_w_i.T @ [0, 0, 1], R_verdad.T @ [0, 0, 1]
+    assert np.arccos(np.clip(arriba_estimado @ arriba_verdadero, -1, 1)) < np.radians(0.1)
+
+    # 3. Una imagen anterior al estado del filtro se descarta, y se cuenta
+    assert con.nueva_imagen(0, np.zeros((480, 640), np.uint8)) is None and con.descartadas == 1
+
+
+def test_cargar_calibracion_acc(tmp_path, capsys):
+    from apps.pi_vio import cargar_calibracion_acc
+    from vio import calibracion_imu as ci
+    ruta = tmp_path / "imu_calibracion.yaml"
+    assert cargar_calibracion_acc(ruta, False) is None                       # no existe
+    assert "SIN calibrar" in capsys.readouterr().out
+    ci.guardar_calibracion_imu(ruta, [0.1, -0.2, -1.09], [1.0, 0.99, 1.01], {"fecha": "hoy"})
+    sesgo, escala = cargar_calibracion_acc(ruta, False)
+    assert sesgo == pytest.approx([0.1, -0.2, -1.09]) and escala == pytest.approx([1.0, 0.99, 1.01])
+    assert cargar_calibracion_acc(ruta, True) is None                        # --sin-calibracion-acc

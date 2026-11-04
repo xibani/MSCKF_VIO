@@ -12,6 +12,7 @@ import time
 
 import numpy as np
 
+from vio import calibracion_imu as ci
 from vio import inicializacion as ini
 from vio import modelo_camara as mc
 from vio import msckf as ms
@@ -44,9 +45,11 @@ def leer_poses(ruta):
 class PipelineVio:
     """Inicialización + front-end + MSCKF, alimentado muestra a muestra e imagen a imagen."""
 
-    def __init__(self, K, dist, R_c_i, t_c_i, t_d_ns, cfgs):
+    def __init__(self, K, dist, R_c_i, t_c_i, t_d_ns, cfgs, calib_acc=None):
         """K, dist: intrínsecos. R_c_i, t_c_i: extrínseca T_c_i. t_d_ns: desfase de Kalibr.
         cfgs: dict con los dicts de config "vio", "frontend", "msckf" y "triangulacion".
+        calib_acc: (sesgo (3,), escala (3,)) del acelerómetro (etapa 7.2), o None para
+            usar la medida tal cual.
         """
         self.K, self.dist = K, dist
         self.R_c_i, self.t_c_i = R_c_i, t_c_i
@@ -59,6 +62,8 @@ class PipelineVio:
         self.problemas = []               # por qué falló el último intento de inicializar
         self.intentos = 0
         self.uv_anterior = {}             # id -> posición [px] de cada punto en la imagen anterior
+        self.calib_acc = calib_acc
+        self.descartadas = 0              # imágenes anteriores al estado del filtro (relojes mal)
 
     # ---------------- Inicialización ----------------
     def _inicializar(self):
@@ -100,6 +105,11 @@ class PipelineVio:
     # ---------------- Datos ----------------
     def nueva_imu(self, t_ns, w_m, a_m):
         """Una muestra de la IMU (t_ns [ns], w_m [rad/s], a_m [m/s²])."""
+        # Etapa 7.2: a_medida = escala·a + sesgo  ->  a = (a_medida - sesgo) / escala.
+        # Se corrige aquí, antes de todo, para que la inicialización y el filtro vean lo mismo
+        a_m = np.asarray(a_m, dtype=float)
+        if self.calib_acc is not None:
+            a_m = ci.corregir_acelerometro(a_m, self.calib_acc[0], self.calib_acc[1])
         if self.filtro is None:
             self.reposo.append((int(t_ns), np.asarray(w_m, dtype=float), np.asarray(a_m, dtype=float)))
             duracion_s = (self.reposo[-1][0] - self.reposo[0][0]) / 1e9
@@ -118,7 +128,8 @@ class PipelineVio:
             return None
         t_ns = int(t_camara_ns) + self.t_d_ns          # convención de Kalibr: t_cam + t_d
         if t_ns <= self.filtro.t_ns:
-            return None                                 # imagen anterior al estado actual
+            self.descartadas += 1                       # imagen anterior al estado actual
+            return None                               # imagen anterior al estado actual
 
         # 1. IMU hasta el instante de la imagen (las posteriores esperan a la siguiente)
         t0 = time.perf_counter_ns()
