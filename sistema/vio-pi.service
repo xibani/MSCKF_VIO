@@ -10,11 +10,11 @@ After=vio-visor-web.service
 
 [Service]
 Type=simple
-User=svo
-WorkingDirectory=/home/svo/proyectos/MSCKF_VIO
+User=svo-raspi
+WorkingDirectory=/home/svo-raspi/proyectos/MSCKF_VIO
 Environment=PYTHONUNBUFFERED=1
 # Todo en la propia Pi: la pose y las imágenes van al visor web por 127.0.0.1
-ExecStart=/home/svo/proyectos/MSCKF_VIO/.venv-rpi/bin/python -m apps.pi_vio --ip 127.0.0.1
+ExecStart=/home/svo-raspi/proyectos/MSCKF_VIO/.venv-rpi/bin/python -m apps.pi_vio --ip 127.0.0.1
 # Si falla (la cámara aún no está lista, la IMU no responde...), se relanza a los 5 s
 Restart=on-failure
 RestartSec=5
