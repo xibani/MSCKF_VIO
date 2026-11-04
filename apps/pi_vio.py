@@ -7,6 +7,8 @@ Uso, desde ~/svo-pi:
     python -m apps.pi_vio --grabacion datos/sim_vio        # sin sensores: una grabación EuRoC
     python -m apps.pi_vio --grabacion datos/sim_vio --sin-red
     python -m apps.pi_vio --sin-vista                     # sin enviar las imágenes al visor
+    python -m apps.pi_vio --grabacion datos/sim_vio --sin-calibracion-acc   # datos sintéticos
+        El acelerómetro se corrige con config/imu_calibracion.yaml (etapa 7.2) si existe.
 En vivo: QUIETO hasta que aparezca "VIO EN MARCHA". Ctrl+C para terminar.
 Al encender la Pi lo lanza systemd (sistema/instalar_servicios.sh); "systemctl stop" envía
   SIGTERM, que aquí se trata igual que Ctrl+C.
@@ -29,6 +31,7 @@ import cv2
 import numpy as np
 
 from captura import euroc
+from vio.config import RAIZ_PROYECTO, cargar_config, ruta_config
 from vio import modelo_camara as mc
 from vio import protocolo
 from vio import vista as vista_vio
@@ -145,7 +148,25 @@ def terminar_con_sigterm():
           raise KeyboardInterrupt
       signal.signal(signal.SIGTERM, manejador)
       
-      
+
+def cargar_calibracion_acc(ruta, desactivada):
+       """Etapa 7.2: (sesgo, escala) del acelerómetro para corregir sus medidas, o None.
+
+       ruta: Path de config/imu_calibracion.yaml. desactivada: True con --sin-calibracion-acc
+       (p. ej. en grabaciones sintéticas, que no vienen de este sensor).
+       """
+       if desactivada:
+           print("Acelerómetro SIN corregir (--sin-calibracion-acc)")
+           return None
+       if not ruta.exists():
+           print(f"AVISO: acelerómetro SIN calibrar (no existe {ruta.name}): haz la etapa 7.2")
+           return None
+       sesgo, escala = ci.cargar_calibracion_imu(ruta=ruta)
+       print(f"Acelerómetro corregido con {ruta.name}: sesgo {np.round(sesgo, 3)} m/s²,"
+             f" escala {np.round(escala, 4)}")
+       return sesgo, escala
+
+
 def resumen_tiempos(tiempos, presupuesto_ms):
     """Imprime media, percentil 95 y máximo de cada parte, y cuántas imágenes se pasan."""
     print("Tiempo por imagen [ms]:      media    p95    máx")
@@ -164,6 +185,8 @@ def main():
     parser.add_argument("--ip", default=cfg_red["ip_pc"], help="IP del PC con el visor")
     parser.add_argument("--sin-red", action="store_true", help="no enviar nada al visor")
     parser.add_argument("--sin-vista", action="store_true", help="enviar la pose, pero no las imágenes")
+    parser.add_argument("--sin-calibracion-acc", action="store_true",
+                        help="no corregir el acelerómetro con config/imu_calibracion.yaml")
     args = parser.parse_args()
     
     terminar_con_sigterm()
@@ -178,7 +201,8 @@ def main():
         print("AVISO: extrínseca cámara-IMU PROVISIONAL (config/camara_imu.yaml): falta Kalibr (7.4)")
     if cargar_config("camara_intrinsecos").get("info", {}).get("provisional"):
         print("AVISO: intrínsecos PROVISIONALES (config/camara_intrinsecos.yaml): falta la etapa 7.1")
-    pipeline = PipelineVio(K, dist, R_c_i, t_c_i, ext["t_d_ns"], cfgs)
+    calib_acc = cargar_calibracion_acc(ruta_config("imu_calibracion"), args.sin_calibracion_acc)
+    pipeline = PipelineVio(K, dist, R_c_i, t_c_i, ext["t_d_ns"], cfgs, calib_acc)
 
     # --- 2. Fuente de datos y salida ---
     contadores = {}
@@ -211,6 +235,9 @@ def main():
                 if pipeline.intentos > intentos_vistos and pipeline.problemas:
                     intentos_vistos = pipeline.intentos
                     print("No estaba quieto:", "; ".join(pipeline.problemas), "-> se repite")
+                    if any("|a|" in p for p in pipeline.problemas) and calib_acc is None:
+                           print("   (si se repite igual con la placa quieta, no es movimiento: es el"
+                                 " acelerómetro sin calibrar -> python -m herramientas.calibrar_acelerometro)")
                 continue
             r = pipeline.nueva_imagen(evento[1], evento[2])
             n_imagenes += 1

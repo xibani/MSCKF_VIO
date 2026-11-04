@@ -167,7 +167,7 @@ def test_enviar_imagen_llega_y_se_decodifica():
     receptor.settimeout(2.0)
     emisor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        pipeline = SimpleNamespace(filtro=None, frontend=None)       # aún inicializando
+        pipeline = SimpleNamespace(filtro=None, frontend=None, reposo=[], intentos=0, problemas=[])  # aún inicializando
         pi_vio.enviar_imagen(emisor, receptor.getsockname(), 42, imagen_gris(), pipeline, None, CFG_VISTA)
         datos, _ = receptor.recvfrom(65536)
         t_ns, jpeg = protocolo.leer_imagen(datos)
