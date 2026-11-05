@@ -5,10 +5,18 @@
 # SUSTITUIR por el resultado de herramientas/calibrar_camara.py (etapa 7.1).
 ancho: 640
 alto: 480
-fx: 643.0
-fy: 643.0
-cx: 320.0
-cy: 240.0
-dist_k1_k2_p1_p2_k3: [0.0, 0.0, 0.0, 0.0, 0.0]
+fx: 621.1817113704624
+fy: 620.8429633798299
+cx: 326.5255462690422
+cy: 230.16935638539903
+dist_k1_k2_p1_p2_k3:
+- 0.16805508588074802
+- -0.5899135736852616
+- -0.0072546207593308975
+- 0.00041529865650657776
+- 0.9553312680123643
 info:
-  provisional: true
+  rms_px: 0.4544
+  imagenes: 28
+  carpeta: /home/svo-raspi/proyectos/MSCKF_VIO/datos/calib_cam_20261105_131028
+  fecha: '2026-11-05T13:12:32'

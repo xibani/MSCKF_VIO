@@ -4,7 +4,7 @@
 tablero:
   esquinas_x: 9            # esquinas INTERIORES en horizontal (un tablero de 10 x 7 cuadros)
   esquinas_y: 6            # esquinas interiores en vertical
-  lado_m: 0.025            # lado de un cuadro, MEDIDO con regla sobre el papel impreso [m]
+  lado_m: 0.024            # lado de un cuadro, MEDIDO con regla sobre el papel impreso [m]
 
 camara:
   imagenes_objetivo: 30    # imágenes a capturar
