@@ -32,6 +32,7 @@ import numpy as np
 
 from captura import euroc
 from vio.config import RAIZ_PROYECTO, cargar_config, ruta_config
+from vio import calibracion_imu as ci
 from vio import modelo_camara as mc
 from vio import protocolo
 from vio import vista as vista_vio
