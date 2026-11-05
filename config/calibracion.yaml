@@ -19,3 +19,16 @@ acelerometro:
   t_por_posicion_s: 5.0    # segundos quietos en cada una de las 6 posiciones
   sigma_gir_max_dps: 0.5   # si el giroscopio se mueve más, se repite la posición
   coseno_min: 0.98         # el eje esperado debe estar a menos de ~11° de la vertical
+
+allan:                     # etapa 7.3: ruido de la IMU por varianza de Allan
+  descartar_inicio_s: 120  # se tira el principio: la placa aún se asienta y se calienta
+  duracion_min_s: 3600     # por debajo se avisa: el paseo del sesgo no llegará a verse
+  puntos_por_decada: 10    # resolución en τ de la curva
+  fraccion_tau_max: 0.1    # τ máximo = T/10: con menos de ~10 clusters σ sale con mucho error
+  tau_ruido_blanco_s: [0.1, 1.0]   # tramo de la recta -1/2 (por debajo de 0,1 s influye el DLPF)
+  pendiente_paseo_min: 0.3 # tramo del paseo: pendiente local por encima de esto (recta +1/2)
+  huecos_max_pct: 0.1      # muestras perdidas por encima de este %: se avisa
+  factor_filtro: 2.0       # ruido para el MSCKF = medido × esto (en reposo sale optimista)
+  factor_kalibr: 10.0      # el wiki de Kalibr recomienda ~×10 en IMU MEMS baratas
+  referencia_ruido_gir: 8.7e-5   # hoja de datos de la MPU-6050 [rad/s/√Hz], para comparar
+  referencia_ruido_acc: 3.9e-3   # hoja de datos [m/s²/√Hz] (400 µg/√Hz)
