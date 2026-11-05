@@ -6,7 +6,7 @@ R_i_c:
   - [0.0, 0.0, 1.0]
   - [-1.0, 0.0, 0.0]
   - [0.0, -1.0, 0.0]
-p_i_c_m: [0.03, 0.0, 0.01]   # posición de la cámara en ejes de la IMU [m]
+p_i_c_m: [0.024, 0.0, 0.035]   # posición de la cámara en ejes de la IMU [m]
 t_d_ns: 0                    # t_cámara_corregido = t_cámara + t_d  [ns]
 info:
   provisional: true
