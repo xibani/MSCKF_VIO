@@ -1,0 +1,53 @@
+# Ruido de la IMU por varianza de Allan: generado por herramientas/analizar_allan.py
+# Valores MEDIDOS en reposo (sin inflar). Unidades: N [unidad/√Hz], K [unidad/s/√Hz]
+ruido_gir: 7.498915092199715e-05
+paseo_sesgo_gir: 2.0456461598563133e-05
+ruido_acc: 0.0019100011667767046
+paseo_sesgo_acc: 0.0013497536253981519
+por_eje:
+  gir:
+    x:
+      N: 6.18717417211826e-05
+      K: 1.1599925918188018e-05
+      K_observado: true
+      B: 4.745677232132907e-05
+      tau_B_s: 8.820791298000001
+    y:
+      N: 7.498915092199715e-05
+      K: 2.0456461598563133e-05
+      K_observado: true
+      B: 6.725285748886548e-05
+      tau_B_s: 6.97941399
+    z:
+      N: 6.3376549353353e-05
+      K: 7.041861579430602e-06
+      K_observado: true
+      B: 6.13343472417896e-05
+      tau_B_s: 6.97941399
+  acc:
+    x:
+      N: 0.0013022725154780272
+      K: 0.00010541064931769234
+      K_observado: true
+      B: 0.0008647217258486527
+      tau_B_s: 11.142312689
+    y:
+      N: 0.0013140392352157418
+      K: 5.732804533101487e-05
+      K_observado: true
+      B: 0.0004984082233023201
+      tau_B_s: 72.402757753
+    z:
+      N: 0.0019100011667767046
+      K: 0.0013497536253981519
+      K_observado: true
+      B: 0.002250831928809644
+      tau_B_s: 2.737316267
+info:
+  fecha: '2026-11-05T16:34:47'
+  grabacion: imu_20261105_132330
+  descartado_inicio_s: 120
+  duracion_s: 7079.9977
+  muestras: 471095
+  perdidas: 943810
+  perdidas_pct: 66.7048
