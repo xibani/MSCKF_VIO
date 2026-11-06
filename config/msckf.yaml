@@ -3,10 +3,10 @@
 imu:
   # Ruido que el FILTRO cree que tiene la IMU. PROVISIONAL: los mismos valores que el
   # simulador (hoja de datos de la MPU-6050). SUSTITUIR por la varianza de Allan (etapa 7.3).
-  ruido_gir: 8.7e-5            # N_g [rad/s/√Hz]
-  ruido_acc: 3.9e-3            # N_a [m/s²/√Hz]
-  paseo_sesgo_gir: 2.0e-5      # K_g [rad/s²/√Hz]
-  paseo_sesgo_acc: 4.0e-4      # K_a [m/s³/√Hz]
+  ruido_gir: 1.56e-04            # N_g [rad/s/√Hz]
+  ruido_acc: 3.80e-03            # N_a [m/s²/√Hz]
+  paseo_sesgo_gir: 1.25e-05      # K_g [rad/s²/√Hz]
+  paseo_sesgo_acc: 3.01e-04      # K_a [m/s³/√Hz]
 
 inicial:
   # Desviaciones típicas del error inicial: la diagonal de P0
