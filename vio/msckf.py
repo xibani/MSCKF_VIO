@@ -6,7 +6,8 @@ Estado NOMINAL: la IMU (R_w_i, v_w, p_w, b_g, b_a; un EstadoImu de la etapa 6) y
 Estado de ERROR (lo que estima el filtro de Kalman): un vector pequeño alrededor del nominal,
     [δθ, δv, δp, δb_g, δb_a | δθ_c1, δp_c1 | δθ_c2, δp_c2 | ...]       15 + 6·M números
 con la orientación en ejes locales:  R_verdadera = R_estimada · exp_so3(δθ).
-Los puntos 3D NO están en el estado: se triangulan y se eliminan de las ecuaciones.
+Etapa 18: los puntos que se usan en una corrección se guardan aparte, con su profundidad en
+cada imagen, para el mapa. Cuando un clon sale de la ventana se entrega con esas profundidades.
 
 Referencia de las ecuaciones de error: J. Solà, "Quaternion kinematics for the error-state
 Kalman filter" (2017), con error local de orientación.
@@ -20,14 +21,14 @@ from vio import triangulacion as tri
 from vio.constantes import GRAVEDAD_W
 from vio.propagacion import propagar
 
-DIM_IMU = 15     # tamaño del error de la IMU
-DIM_CLON = 6     # tamaño del error de cada clon: [δθ_c, δp_c]
+DIM_IMU = 15  # tamaño del error de la IMU
+DIM_CLON = 6  # tamaño del error de cada clon: [δθ_c, δp_c]
 # Posición de cada parte dentro del error de la IMU
-TH = slice(0, 3)     # δθ    orientación
-V = slice(3, 6)      # δv    velocidad
-P = slice(6, 9)      # δp    posición
-BG = slice(9, 12)    # δb_g  sesgo del giroscopio
-BA = slice(12, 15)   # δb_a  sesgo del acelerómetro
+TH = slice(0, 3)  # δθ    orientación
+V = slice(3, 6)  # δv    velocidad
+P = slice(6, 9)  # δp    posición
+BG = slice(9, 12)  # δb_g  sesgo del giroscopio
+BA = slice(12, 15)  # δb_a  sesgo del acelerómetro
 
 
 # =====================================================================
@@ -62,15 +63,19 @@ def matrices_error(R_w_i, w_hat, a_hat):
 
 def ruido_continuo(cfg_imu):
     """Q_c (12x12): densidades de los cuatro ruidos al cuadrado, cada una en sus 3 ejes."""
-    diagonal = ([cfg_imu["ruido_gir"] ** 2] * 3 + [cfg_imu["ruido_acc"] ** 2] * 3
-                + [cfg_imu["paseo_sesgo_gir"] ** 2] * 3 + [cfg_imu["paseo_sesgo_acc"] ** 2] * 3)
+    diagonal = (
+        [cfg_imu["ruido_gir"] ** 2] * 3
+        + [cfg_imu["ruido_acc"] ** 2] * 3
+        + [cfg_imu["paseo_sesgo_gir"] ** 2] * 3
+        + [cfg_imu["paseo_sesgo_acc"] ** 2] * 3
+    )
     return np.diag(diagonal)
 
 
 def transicion(F, G, Qc, dt):
     """Matriz de transición y ruido de un paso de duración dt [s].
 
-        Phi ≈ I + F·dt + ½·(F·dt)²          Q_d ≈ G·Q_c·Gᵀ·dt
+    Phi ≈ I + F·dt + ½·(F·dt)²          Q_d ≈ G·Q_c·Gᵀ·dt
     """
     Fdt = F * dt
     Phi = np.eye(DIM_IMU) + Fdt + 0.5 * Fdt @ Fdt
@@ -90,7 +95,7 @@ def propagar_covarianza(P_total, Phi, Qd):
     if len(P_total) > DIM_IMU:
         P_total[:DIM_IMU, DIM_IMU:] = Phi @ P_total[:DIM_IMU, DIM_IMU:]
         P_total[DIM_IMU:, :DIM_IMU] = P_total[:DIM_IMU, DIM_IMU:].T
-    return 0.5 * (P_total + P_total.T)            # simétrica también con redondeo
+    return 0.5 * (P_total + P_total.T)  # simétrica también con redondeo
 
 
 def inyectar_imu(estado, dx):
@@ -118,9 +123,13 @@ def diferencia_imu(verdad, estimado):
 
 def covarianza_inicial(cfg_ini):
     """P0 (15x15) diagonal a partir de las desviaciones típicas del YAML."""
-    sigmas = ([cfg_ini["sigma_orientacion_rad"]] * 3 + [cfg_ini["sigma_velocidad_m_s"]] * 3
-              + [cfg_ini["sigma_posicion_m"]] * 3 + [cfg_ini["sigma_sesgo_gir_rad_s"]] * 3
-              + [cfg_ini["sigma_sesgo_acc_m_s2"]] * 3)
+    sigmas = (
+        [cfg_ini["sigma_orientacion_rad"]] * 3
+        + [cfg_ini["sigma_velocidad_m_s"]] * 3
+        + [cfg_ini["sigma_posicion_m"]] * 3
+        + [cfg_ini["sigma_sesgo_gir_rad_s"]] * 3
+        + [cfg_ini["sigma_sesgo_acc_m_s2"]] * 3
+    )
     return np.diag(np.array(sigmas) ** 2)
 
 
@@ -190,8 +199,7 @@ def jacobianos_observacion(R_w_c, p_w_c, p_w):
     p_c = R_w_c.T @ (p_w - p_w_c)
     x, y, z = p_c
     h = np.array([x / z, y / z])
-    J_proy = np.array([[1.0 / z, 0.0, -x / z ** 2],
-                       [0.0, 1.0 / z, -y / z ** 2]])
+    J_proy = np.array([[1.0 / z, 0.0, -x / z**2], [0.0, 1.0 / z, -y / z**2]])
     H_clon = J_proy @ np.hstack([so3.hat(p_c), -R_w_c.T])
     H_f = J_proy @ R_w_c.T
     return h, H_clon, H_f
@@ -207,31 +215,31 @@ def residuo_pista(poses_clones, posiciones, xy, p_w, dim):
     Etapa 13: las n observaciones a la vez (mismas fórmulas que jacobianos_observacion).
     """
     n = len(xy)
-    R_w_c = np.array([pose[0] for pose in poses_clones])          # (n, 3, 3)
-    p_w_c = np.array([pose[1] for pose in poses_clones])          # (n, 3)
-    R_c_w = np.transpose(R_w_c, (0, 2, 1))                        # R_w_cᵀ de cada clon
+    R_w_c = np.array([pose[0] for pose in poses_clones])  # (n, 3, 3)
+    p_w_c = np.array([pose[1] for pose in poses_clones])  # (n, 3)
+    R_c_w = np.transpose(R_w_c, (0, 2, 1))  # R_w_cᵀ de cada clon
     # 1. El punto en cada cámara y su proyección
-    p_c = np.einsum("kij,kj->ki", R_c_w, p_w - p_w_c)              # (n, 3)
+    p_c = np.einsum("kij,kj->ki", R_c_w, p_w - p_w_c)  # (n, 3)
     x, y, z = p_c[:, 0], p_c[:, 1], p_c[:, 2]
-    r = (np.asarray(xy) - p_c[:, :2] / p_c[:, 2:3]).ravel()        # x0, y0, x1, y1...
+    r = (np.asarray(xy) - p_c[:, :2] / p_c[:, 2:3]).ravel()  # x0, y0, x1, y1...
     # 2. Jacobiano de la proyección, (n, 2, 3)
     J_proy = np.zeros((n, 2, 3))
     J_proy[:, 0, 0] = 1.0 / z
-    J_proy[:, 0, 2] = -x / z ** 2
+    J_proy[:, 0, 2] = -x / z**2
     J_proy[:, 1, 1] = 1.0 / z
-    J_proy[:, 1, 2] = -y / z ** 2
+    J_proy[:, 1, 2] = -y / z**2
     # 3. [p_c]x de cada observación, (n, 3, 3)
     hat_pc = np.zeros((n, 3, 3))
     hat_pc[:, 0, 1], hat_pc[:, 0, 2] = -z, y
     hat_pc[:, 1, 0], hat_pc[:, 1, 2] = z, -x
     hat_pc[:, 2, 0], hat_pc[:, 2, 1] = -y, x
     # 4. H_clon = J_proy·[ [p_c]x | -R_w_cᵀ ],  H_f = J_proy·R_w_cᵀ
-    H_clon = np.concatenate([J_proy @ hat_pc, -(J_proy @ R_c_w)], axis=2)   # (n, 2, 6)
+    H_clon = np.concatenate([J_proy @ hat_pc, -(J_proy @ R_c_w)], axis=2)  # (n, 2, 6)
     H_f = (J_proy @ R_c_w).reshape(2 * n, 3)
     H_x = np.zeros((2 * n, dim))
     for k, posicion in enumerate(posiciones):
         columna = DIM_IMU + DIM_CLON * posicion
-        H_x[2 * k:2 * k + 2, columna:columna + DIM_CLON] = H_clon[k]
+        H_x[2 * k : 2 * k + 2, columna : columna + DIM_CLON] = H_clon[k]
     return r, H_x, H_f
 
 
@@ -249,7 +257,9 @@ def proyectar_nulo(H_x, H_f, r):
     return A.T @ H_x, A.T @ r
 
 
-_UMBRALES_CHI2 = {}     # (confianza, grados de libertad) -> umbral: se calcula una sola vez
+_UMBRALES_CHI2 = (
+    {}
+)  # (confianza, grados de libertad) -> umbral: se calcula una sola vez
 
 
 def umbral_chi2(confianza, grados):
@@ -282,7 +292,7 @@ def comprimir_qr(H, r):
     """
     if len(r) <= H.shape[1]:
         return H, r
-    Q, R_qr = np.linalg.qr(H)                      # modo "reduced": Q (m x n)
+    Q, R_qr = np.linalg.qr(H)  # modo "reduced": Q (m x n)
     return R_qr, Q.T @ r
 
 
@@ -292,11 +302,12 @@ def correccion_kalman(P_total, H, r, sigma2):
     Devuelve: (dx, P) con dx el error estimado (que se inyectará) y P corregida.
     """
     S = H @ P_total @ H.T + sigma2 * np.eye(len(r))
-    K = np.linalg.solve(S, H @ P_total).T          # K = P·Hᵀ·S⁻¹ (S es simétrica)
+    K = np.linalg.solve(S, H @ P_total).T  # K = P·Hᵀ·S⁻¹ (S es simétrica)
     dx = K @ r
     I_KH = np.eye(len(P_total)) - K @ H
     P_nueva = I_KH @ P_total @ I_KH.T + sigma2 * K @ K.T
     return dx, 0.5 * (P_nueva + P_nueva.T)
+
 
 # =====================================================================
 # Paso 12.4 — El filtro completo
@@ -304,8 +315,20 @@ def correccion_kalman(P_total, H, r, sigma2):
 class Msckf:
     """MSCKF: se alimenta con muestras de IMU (anadir_imu) e imágenes (procesar_imagen)."""
 
-    def __init__(self, estado, P0, t_ns, w_m, a_m, R_c_i, t_c_i, focal_px, cfg, cfg_tri,
-                 g_w=GRAVEDAD_W):
+    def __init__(
+        self,
+        estado,
+        P0,
+        t_ns,
+        w_m,
+        a_m,
+        R_c_i,
+        t_c_i,
+        focal_px,
+        cfg,
+        cfg_tri,
+        g_w=GRAVEDAD_W,
+    ):
         """estado: EstadoImu inicial en t_ns, con su covarianza P0 (15x15).
         w_m, a_m: primera muestra de la IMU (en t_ns).
         R_c_i, t_c_i: extrínseca T_c_i. focal_px: para pasar el ruido de px a normalizadas.
@@ -317,7 +340,7 @@ class Msckf:
         self.w_ant = np.array(w_m, dtype=float)
         self.a_ant = np.array(a_m, dtype=float)
         self.R_i_c = R_c_i.T
-        self.p_i_c = -R_c_i.T @ t_c_i                 # posición de la cámara en ejes de la IMU
+        self.p_i_c = -R_c_i.T @ t_c_i  # posición de la cámara en ejes de la IMU
         self.focal = focal_px
         self.cfg = cfg
         self.cfg_tri = cfg_tri
@@ -325,21 +348,28 @@ class Msckf:
         self.Qc = ruido_continuo(cfg["imu"])
         self.sigma2 = (cfg["correccion"]["ruido_px"] / focal_px) ** 2
         self.M = cfg["ventana"]["clones_max"]
-        self.clones = []          # lista de dicts {imagen, t_ns, R_w_c, p_w_c}, del más antiguo al más nuevo
-        self.trozos = {}          # id del punto -> {"imagenes": [...], "xy": [...]}
+        self.clones = (
+            []
+        )  # lista de dicts {imagen, t_ns, R_w_c, p_w_c}, del más antiguo al más nuevo
+        self.trozos = {}  # id del punto -> {"imagenes": [...], "xy": [...]}
         self.n_imagenes = 0
+        # Etapa 18: número de imagen -> lista de (id, xy (2,), z [m], paralaje [°]) de las pistas aceptadas
+        self.mapa_obs = {}
 
     # ---------------- Propagación ----------------
     def _paso(self, w_m, a_m, dt):
         """Un paso de propagación: primero la covarianza (con el estado al principio del paso)."""
-        F, G = matrices_error(self.estado.R_w_i, w_m - self.estado.b_g, a_m - self.estado.b_a)
+        F, G = matrices_error(
+            self.estado.R_w_i, w_m - self.estado.b_g, a_m - self.estado.b_a
+        )
         Phi, Qd = transicion(F, G, self.Qc, dt)
         self.P = propagar_covarianza(self.P, Phi, Qd)
         self.estado = propagar(self.estado, w_m, a_m, dt, self.g_w)
 
     def anadir_imu(self, t_ns, w_m, a_m):
         """Una muestra nueva de la IMU: propaga desde el instante actual hasta t_ns,
-        con la media de la muestra anterior y esta (regla del trapecio, como en la etapa 6)."""
+        con la media de la muestra anterior y esta (regla del trapecio, como en la etapa 6).
+        """
         w_m = np.asarray(w_m, dtype=float)
         a_m = np.asarray(a_m, dtype=float)
         dt = (int(t_ns) - self.t_ns) / 1e9
@@ -359,10 +389,14 @@ class Msckf:
     # ---------------- Imágenes ----------------
     def _clonar(self, indice):
         """Añade un clon con la pose actual de la cámara."""
-        R_w_c, p_w_c = pose_camara_desde_imu(self.estado.R_w_i, self.estado.p_w, self.R_i_c, self.p_i_c)
+        R_w_c, p_w_c = pose_camara_desde_imu(
+            self.estado.R_w_i, self.estado.p_w, self.R_i_c, self.p_i_c
+        )
         J = jacobiano_clon(self.estado.R_w_i, self.R_i_c, self.p_i_c)
         self.P = clonar_covarianza(self.P, J)
-        self.clones.append({"imagen": indice, "t_ns": self.t_ns, "R_w_c": R_w_c, "p_w_c": p_w_c})
+        self.clones.append(
+            {"imagen": indice, "t_ns": self.t_ns, "R_w_c": R_w_c, "p_w_c": p_w_c}
+        )
 
     def _inyectar(self, dx):
         """Aplica el error estimado a la IMU y a todos los clones."""
@@ -370,8 +404,24 @@ class Msckf:
         self.estado.R_w_i = so3.reortonormalizar(self.estado.R_w_i)
         for k, clon in enumerate(self.clones):
             inicio = DIM_IMU + DIM_CLON * k
-            clon["R_w_c"], clon["p_w_c"] = inyectar_clon(clon["R_w_c"], clon["p_w_c"],
-                                                          dx[inicio:inicio + DIM_CLON])
+            clon["R_w_c"], clon["p_w_c"] = inyectar_clon(
+                clon["R_w_c"], clon["p_w_c"], dx[inicio : inicio + DIM_CLON]
+            )
+
+    def _guardar_para_mapa(self, trozo, p_w, paralaje, poses_clones, xy, est):
+        """Etapa 17: guarda una pista aceptada para el mapa.
+
+        - El punto en el mundo, para el mapa disperso: est["puntos_mapa"].
+        - Su profundidad z en cada imagen en que se vio, para los keyframes de mapeo.
+          Se guarda z (en ejes de cada cámara) y no p_w, porque una corrección posterior mueve
+          el clon y el punto a la vez: la profundidad respecto a la cámara cambia mucho menos.
+        """
+        est["puntos_mapa"].append((trozo["id"], p_w.copy(), paralaje))
+        for imagen, (R_w_c, p_w_c), xy_k in zip(trozo["imagenes"], poses_clones, xy):
+            z = (R_w_c.T @ (p_w - p_w_c))[2]  # tercera componente de p_c
+            self.mapa_obs.setdefault(imagen, []).append(
+                (trozo["id"], np.array(xy_k, dtype=float), z, paralaje)
+            )
 
     def _corregir(self, trozos, est):
         """Corrección con las pistas listas. Rellena los recuentos de est."""
@@ -385,7 +435,9 @@ class Msckf:
                 continue
             # 1. Triangular con las poses de los clones (etapa 9)
             posiciones = [imagen - primera for imagen in trozo["imagenes"]]
-            poses_clones = [(self.clones[k]["R_w_c"], self.clones[k]["p_w_c"]) for k in posiciones]
+            poses_clones = [
+                (self.clones[k]["R_w_c"], self.clones[k]["p_w_c"]) for k in posiciones
+            ]
             poses_c_w = [(R.T, -R.T @ p) for R, p in poses_clones]
             xy = np.array(trozo["xy"])
             res = tri.triangular(poses_c_w, xy, self.cfg_tri, self.focal)
@@ -393,23 +445,30 @@ class Msckf:
                 est["sin_triangular"] += 1
                 continue
             # 2. Residuos y jacobianos; 3. eliminar el punto
-            r, H_x, H_f = residuo_pista(poses_clones, posiciones, xy, res["p_w"], len(self.P))
+            r, H_x, H_f = residuo_pista(
+                poses_clones, posiciones, xy, res["p_w"], len(self.P)
+            )
             H0, r0 = proyectar_nulo(H_x, H_f, r)
             # 4. Prueba chi-cuadrado
-            pasa, _, _ = prueba_chi2(H0, r0, self.P, self.sigma2, cfg_cor["confianza_chi2"])
+            pasa, _, _ = prueba_chi2(
+                H0, r0, self.P, self.sigma2, cfg_cor["confianza_chi2"]
+            )
             if not pasa:
                 est["chi2"] += 1
                 continue
             filas_H.append(H0)
             filas_r.append(r0)
             est["usadas"] += 1
+            self._guardar_para_mapa(
+                trozo, res["p_w"], res["paralaje_grados"], poses_clones, xy, est
+            )
 
         # 5. Una sola corrección con todas las pistas aceptadas
         if filas_H:
             H = np.vstack(filas_H)
             r = np.concatenate(filas_r)
             est["filas"] = len(r)
-            H, r = comprimir_qr(H, r)                  # etapa 13: menos filas, mismo resultado
+            H, r = comprimir_qr(H, r)  # etapa 13: menos filas, mismo resultado
             dx, self.P = correccion_kalman(self.P, H, r, self.sigma2)
             self._inyectar(dx)
 
@@ -419,9 +478,9 @@ class Msckf:
         paralaje, ninguna pista se puede triangular y el filtro deriva solo con la IMU.
         """
         H = np.zeros((3, len(self.P)))
-        H[:, V] = np.eye(3)                            # la medida es la velocidad
-        r = np.zeros(3) - self.estado.v_w              # medida (0) - predicción (v)
-        dx, self.P = correccion_kalman(self.P, H, r, sigma_v ** 2)
+        H[:, V] = np.eye(3)  # la medida es la velocidad
+        r = np.zeros(3) - self.estado.v_w  # medida (0) - predicción (v)
+        dx, self.P = correccion_kalman(self.P, H, r, sigma_v**2)
         self._inyectar(dx)
 
     def procesar_imagen(self, t_ns, ids, xy):
@@ -432,7 +491,15 @@ class Msckf:
         Devuelve: dict con los recuentos de esta imagen.
         """
         indice = self.n_imagenes
-        est = {"usadas": 0, "cortas": 0, "sin_triangular": 0, "chi2": 0, "filas": 0}
+        est = {
+            "usadas": 0,
+            "cortas": 0,
+            "sin_triangular": 0,
+            "chi2": 0,
+            "filas": 0,
+            "puntos_mapa": [],
+            "saliente": None,
+        }  # etapa 18
 
         # 1. Llevar el estado al instante de la imagen y clonar la pose de la cámara
         self.propagar_hasta(t_ns)
@@ -449,14 +516,24 @@ class Msckf:
         # 3. Listas para corregir: las perdidas y las que ya ocupan toda la ventana
         listos = []
         for id_punto in list(self.trozos):
-            if id_punto not in vistos or len(self.trozos[id_punto]["imagenes"]) >= self.M:
-                listos.append(self.trozos.pop(id_punto))
+            if (
+                id_punto not in vistos
+                or len(self.trozos[id_punto]["imagenes"]) >= self.M
+            ):
+                trozo = self.trozos.pop(id_punto)
+                trozo["id"] = id_punto  # etapa 18: para el mapa
+                listos.append(trozo)
         self._corregir(listos, est)
 
-        # 4. Ventana llena: olvidar el clon más antiguo (ninguna pista activa lo usa ya)
+        # 4. Ventana llena: olvidar el clon más antiguo (ninguna pista activa lo usa ya).
+        #    Etapa 18: sale con su pose definitiva y las profundidades de sus puntos aceptados
         if len(self.clones) >= self.M:
             self.P = borrar_clon(self.P, 0)
-            self.clones.pop(0)
+            saliente = self.clones.pop(0)
+            saliente["obs"] = self.mapa_obs.pop(saliente["imagen"], [])
+            for imagen in [k for k in self.mapa_obs if k < saliente["imagen"]]:
+                del self.mapa_obs[imagen]  # por seguridad: nada anterior debe quedar
+            est["saliente"] = saliente
 
         self.n_imagenes += 1
         est["clones"] = len(self.clones)
@@ -472,15 +549,19 @@ def ejecutar_secuencia(filtro, imu, obs, t_camaras):
     Devuelve: dict con, en cada imagen, el estado estimado, P de la IMU y los recuentos.
     """
     estados, P_imu, recuentos = [], [], []
-    siguiente = 1                                   # próxima muestra de IMU por usar
+    siguiente = 1  # próxima muestra de IMU por usar
     for j, t_cam in enumerate(t_camaras):
         # 1. Todas las muestras de IMU hasta el instante de la imagen
         while siguiente < len(imu["t_ns"]) and imu["t_ns"][siguiente] <= t_cam:
-            filtro.anadir_imu(imu["t_ns"][siguiente], imu["w"][siguiente], imu["a"][siguiente])
+            filtro.anadir_imu(
+                imu["t_ns"][siguiente], imu["w"][siguiente], imu["a"][siguiente]
+            )
             siguiente += 1
         # 2. La imagen
         en_imagen = obs["imagen"] == j
-        recuentos.append(filtro.procesar_imagen(t_cam, obs["id"][en_imagen], obs["xy"][en_imagen]))
+        recuentos.append(
+            filtro.procesar_imagen(t_cam, obs["id"][en_imagen], obs["xy"][en_imagen])
+        )
         estados.append(filtro.estado.copia())
         P_imu.append(filtro.P[:DIM_IMU, :DIM_IMU].copy())
     return {"estados": estados, "P_imu": np.array(P_imu), "recuentos": recuentos}

@@ -31,3 +31,15 @@ prueba:                       # etapa 16: pruebas de trayectoria con datos reale
 
 control:                      # etapa 16: órdenes del visor web a pi_vio
   puerto: 5007                # UDP, solo en la propia Pi (127.0.0.1)
+
+mapeo:                        # etapa 17: puntos y keyframes para la reconstrucción en el PC
+  ip_pc: null                 # IP del PC con apps/pc_mapa; null: solo se guarda en disco
+  puerto: 5007                # UDP, distinto del de la pose (5005) y del de la imagen (5006)
+  archivo: mapa.paquetes      # en la carpeta de la sesión: lo mismo que se envía, para repetirlo
+  calidad_jpeg: 85            # imagen de cada keyframe; si no cabe en el paquete, se baja sola
+  paralaje_min_grados: 2.0    # el MSCKF usa pistas desde 1°; el mapa pide más (error ≈ z·σ/θ)
+  profundidad_min_m: 0.1
+  profundidad_max_m: 20.0
+  puntos_min: 15              # un keyframe necesita profundidades para escalar la nube densa
+  fraccion_profundidad: 0.12  # SVO §VI: nuevo keyframe al alejarse el 12 % de la profundidad
+  giro_min_grados: 15.0       # ...o al girar esto (ve otra parte de la habitación)
