@@ -20,7 +20,8 @@ import pytest
 from vio import mapeo
 from vio import msckf as ms
 from vio import protocolo
-from vio import reconstruccion as rec
+
+# from vio import reconstruccion as rec
 from vio import simulador as sim
 from vio import so3
 from vio.config import RAIZ_PROYECTO, cargar_config
