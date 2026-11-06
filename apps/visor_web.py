@@ -55,6 +55,14 @@ TAM_CABECERA_IMAGEN = struct.calcsize(FORMATO_CABECERA_IMAGEN)   # 9 bytes
 VERSION_IMAGEN = 3
 PERIODO_VIDEO_S = 0.03                     # cada cuánto mira el vídeo si hay imagen nueva
 
+# Panel de orientación: dónde cae en la pantalla cada eje del mundo, como [derecha, arriba].
+# Vista "desde detrás de la placa": el observador está detrás (-X), un poco a su derecha (-Y)
+# y por encima (+Z), como la ves al sujetarla con la cámara mirando al frente.
+# Para que el dibujo NO salga en espejo, la dirección hacia el observador
+#     n = (componente "derecha" de los 3 ejes) × (componente "arriba" de los 3 ejes)
+# debe apuntar hacia donde creemos estar: n_z > 0 (encima) y n_x < 0 (detrás).
+EJES_PANTALLA = {"x": [0.40, 0.30], "y": [-1.0, 0.0], "z": [0.0, 1.0]}
+
 
 def decodificar_paquete(datos):
     """Devuelve (version, t_ns, R, p). R es una lista 3x3 y p una lista [x, y, z]
@@ -436,7 +444,7 @@ PAGINA_HTML = r"""<!doctype html>
   <div class="panel ancho"><h2>Cámara y pistas (rojo: recién detectada → verde: seguida 20 imágenes o más)</h2><img id="video" alt="Esperando imágenes de pi_vio…"></div>
   <div class="panel"><h2>Planta X–Y [m] (flecha roja: eje x de la IMU)</h2><canvas id="lienzo_xy"></canvas></div>
   <div class="panel"><h2>Alzado X–Z [m]</h2><canvas id="lienzo_xz"></canvas></div>
-  <div class="panel"><h2>Orientación: ejes de la IMU en el mundo (x rojo, y verde, z azul)</h2><canvas id="lienzo_ori"></canvas></div>
+  <div class="panel"><h2>Orientación vista desde detrás de la placa (x rojo, y verde, z azul)</h2><canvas id="lienzo_ori"></canvas></div>
 </div>
 
 <script>
@@ -654,13 +662,17 @@ function dibujarVista(idLienzo, ia, ib) {
 }
 
 // ------------------------------------------------------------------
-// Orientación: ejes de la IMU en perspectiva isométrica del mundo
+// Orientación: ejes de la IMU vistos desde detrás de la placa
 // ------------------------------------------------------------------
-function proyectarIso(v) {
-  // Devuelve [horizontal, vertical hacia arriba]
-  const c = Math.cos(Math.PI / 6);
-  const s = Math.sin(Math.PI / 6);
-  return [(v[0] - v[1]) * c, v[2] - (v[0] + v[1]) * s];
+// [derecha, arriba] en pantalla de cada eje del mundo (lo rellena visor_web.py con
+// EJES_PANTALLA; ahí está explicado por qué así el dibujo no sale en espejo)
+const EJES_PANTALLA = __EJES_PANTALLA__;
+
+function proyectarOrientacion(v) {
+  // v = vector en ejes del mundo. Devuelve [horizontal hacia la derecha, vertical hacia arriba]
+  const ex = EJES_PANTALLA.x, ey = EJES_PANTALLA.y, ez = EJES_PANTALLA.z;
+  return [v[0] * ex[0] + v[1] * ey[0] + v[2] * ez[0],
+          v[0] * ex[1] + v[1] * ey[1] + v[2] * ez[1]];
 }
 
 function dibujarOrientacion() {
@@ -677,7 +689,7 @@ function dibujarOrientacion() {
   for (let i = 0; i < 3; i++) {
     const e = [0, 0, 0];
     e[i] = 1;
-    const q = proyectarIso(e);
+    const q = proyectarOrientacion(e);
     ctx.strokeStyle = "#666";
     linea(ctx, cx, cy, cx + q[0] * largo, cy - q[1] * largo);
     ctx.fillStyle = "#888";
@@ -693,7 +705,7 @@ function dibujarOrientacion() {
     ctx.lineWidth = 4;
     for (let j = 0; j < 3; j++) {
       const eje = [R[0][j], R[1][j], R[2][j]];
-      const q = proyectarIso(eje);
+      const q = proyectarOrientacion(eje);
       ctx.strokeStyle = colores[j];
       linea(ctx, cx, cy, cx + q[0] * largo, cy - q[1] * largo);
       ctx.fillStyle = colores[j];
@@ -720,6 +732,9 @@ requestAnimationFrame(cuadro);
 </body>
 </html>
 """
+
+# Los ejes del panel de orientación pasan de Python a la página (un solo sitio donde cambiarlos)
+PAGINA_HTML = PAGINA_HTML.replace("__EJES_PANTALLA__", json.dumps(EJES_PANTALLA))
 
 
 if __name__ == "__main__":

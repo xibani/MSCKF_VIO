@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from apps import pi_vio, visor_web
-from vio import protocolo
+from vio import protocolo, so3
 from vio import vista as vista_vio
 from vio.config import cargar_config
 from vio.frontend import Pista
@@ -272,3 +272,56 @@ def test_pagina_tiene_el_panel_de_video(servidor_web):
     assert '<img id="video"' in html
     assert 'fuente.onopen' in html and '"/video?t=" + Date.now()' in html   # se reconecta solo
     conexion.close()
+
+
+# =====================================================================
+# Etapa 15.3 — Panel de orientación sin espejo
+# =====================================================================
+def proyeccion_orientacion():
+    """Las dos filas de la proyección de visor_web: componente "derecha" y "arriba" de X, Y, Z."""
+    E = visor_web.EJES_PANTALLA
+    derecha = np.array([E["x"][0], E["y"][0], E["z"][0]])
+    arriba = np.array([E["x"][1], E["y"][1], E["z"][1]])
+    return derecha, arriba
+
+
+def test_orientacion_sin_espejo():
+    # Una proyección paralela no dice desde qué lado se mira: n = derecha × arriba es la
+    # dirección hacia el observador con la que el dibujo es correcto. Si n no apunta hacia
+    # donde el ojo cree estar (encima, porque z sale hacia arriba), se ve en espejo.
+    derecha, arriba = proyeccion_orientacion()
+    n = np.cross(derecha, arriba)
+    assert n[2] > 0                   # observador por encima
+    assert n[0] < 0                   # y por detrás de la placa (x de la IMU apunta hacia delante)
+    # La proyección anterior (isométrica) era correcta solo vista desde DEBAJO: n_z < 0
+    c, s = np.cos(np.pi / 6), np.sin(np.pi / 6)
+    assert np.cross([c, -c, 0.0], [-s, -s, 1.0])[2] < 0
+
+
+def test_orientacion_movimientos():
+    # Lo que tiene que verse en la tablet al mover la placa (desde detrás, en reposo rumbo 0)
+    derecha, arriba = proyeccion_orientacion()
+
+    def pantalla(v):
+        return np.array([derecha @ v, arriba @ v])
+
+    giro = np.radians(10)
+    # Girar a la izquierda (visto desde arriba, +z): la flecha x (hacia delante) va a la izquierda
+    assert (pantalla(so3.exp_so3([0, 0, giro])[:, 0]) - pantalla([1, 0, 0]))[0] < 0
+    # Alabeo a la derecha (lado derecho abajo, +x): la flecha z se inclina a la derecha
+    assert (pantalla(so3.exp_so3([giro, 0, 0])[:, 2]) - pantalla([0, 0, 1]))[0] > 0
+    # Morro arriba (-y): la flecha x sube
+    assert (pantalla(so3.exp_so3([0, -giro, 0])[:, 0]) - pantalla([1, 0, 0]))[1] > 0
+    # En reposo: y (izquierda de la placa) a la izquierda en pantalla y z hacia arriba
+    assert pantalla([0, 1, 0])[0] < 0 and pantalla([0, 0, 1])[1] > 0
+
+
+def test_pagina_usa_los_ejes_de_python(servidor_web):
+    import json
+    _, puerto = servidor_web
+    conexion = http.client.HTTPConnection("127.0.0.1", puerto, timeout=2.0)
+    conexion.request("GET", "/")
+    html = conexion.getresponse().read().decode("utf-8")
+    conexion.close()
+    assert "const EJES_PANTALLA = " + json.dumps(visor_web.EJES_PANTALLA) + ";" in html
+    assert "__EJES_PANTALLA__" not in html and "proyectarIso" not in html
