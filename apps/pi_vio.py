@@ -8,7 +8,10 @@ Uso, desde ~/svo-pi:
     python -m apps.pi_vio --grabacion datos/sim_vio --sin-red
     python -m apps.pi_vio --sin-vista                     # sin enviar las imágenes al visor
     python -m apps.pi_vio --grabacion datos/sim_vio --sin-calibracion-acc   # datos sintéticos
-        El acelerómetro se corrige con config/imu_calibracion.yaml (etapa 7.2) si existe.
+       
+El acelerómetro se corrige con config/imu_calibracion.yaml (etapa 7.2) si existe.
+El botón "Nueva prueba" del visor web envía "reiniciar" al puerto de control (UDP 5007,
+etapa 16): el VIO vuelve a inicializarse y la trayectoria sigue en vio_trayectoria_2.csv, _3...
 En vivo: QUIETO hasta que aparezca "VIO EN MARCHA". Ctrl+C para terminar.
 Al encender la Pi lo lanza systemd (sistema/instalar_servicios.sh); "systemctl stop" envía
   SIGTERM, que aquí se trata igual que Ctrl+C.
@@ -138,6 +141,31 @@ def enviar_imagen(emisor, destino, t_ns, gris, pipeline, r, cfg_vista):
 # =====================================================================
 # Programa principal
 # =====================================================================
+def abrir_control(puerto):
+    """Socket UDP (solo en la propia Pi) por el que el visor web manda órdenes. None si no se puede."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind(("127.0.0.1", puerto))
+    except OSError as e:
+        print(f"Aviso: sin puerto de control ({puerto}: {e}): el botón 'Nueva prueba' no funcionará")
+        sock.close()
+        return None
+    sock.setblocking(False)              # mirar si hay orden no debe parar el VIO
+    return sock
+
+
+def orden_reiniciar(sock):
+    """¿Ha llegado la orden de reiniciar? Lee TODAS las que esperan (varias pulsaciones = una)."""
+    hay = False
+    while True:
+        try:
+            datos, _ = sock.recvfrom(64)
+        except BlockingIOError:
+            return hay
+        if datos == protocolo.ORDEN_REINICIAR:
+            hay = True
+
+
 def terminar_con_sigterm():
       """Que SIGTERM (lo que envía "systemctl stop") haga lo mismo que Ctrl+C.
 
@@ -188,6 +216,8 @@ def main():
     parser.add_argument("--sin-vista", action="store_true", help="enviar la pose, pero no las imágenes")
     parser.add_argument("--sin-calibracion-acc", action="store_true",
                         help="no corregir el acelerómetro con config/imu_calibracion.yaml")
+    parser.add_argument("--puerto-control", type=int, default=cargar_config("vio")["control"]["puerto"],
+                        help="puerto UDP de las órdenes del visor (0: ninguno)")
     args = parser.parse_args()
     
     terminar_con_sigterm()
@@ -203,7 +233,11 @@ def main():
     if cargar_config("camara_intrinsecos").get("info", {}).get("provisional"):
         print("AVISO: intrínsecos PROVISIONALES (config/camara_intrinsecos.yaml): falta la etapa 7.1")
     calib_acc = cargar_calibracion_acc(ruta_config("imu_calibracion"), args.sin_calibracion_acc)
-    pipeline = PipelineVio(K, dist, R_c_i, t_c_i, ext["t_d_ns"], cfgs, calib_acc)
+    def pipeline_nuevo():
+        """El VIO desde cero (al arrancar y en cada "Nueva prueba" del visor)."""
+        return PipelineVio(K, dist, R_c_i, t_c_i, ext["t_d_ns"], cfgs, calib_acc)
+
+    pipeline = pipeline_nuevo()
 
     # --- 2. Fuente de datos y salida ---
     contadores = {}
@@ -223,6 +257,8 @@ def main():
     con_vista = emisor is not None and not args.sin_vista
     salida = open(carpeta / "vio_trayectoria.csv", "w", encoding="utf-8")
     salida.write(CABECERA_POSES)
+    control = abrir_control(args.puerto_control) if args.puerto_control else None
+    n_prueba = 1
 
     # --- 3. Bucle: el mismo para las dos fuentes ---
     tiempos = []
@@ -240,6 +276,15 @@ def main():
                            print("   (si se repite igual con la placa quieta, no es movimiento: es el"
                                  " acelerómetro sin calibrar -> python -m herramientas.calibrar_acelerometro)")
                 continue
+            # Etapa 16: "Nueva prueba" desde el visor -> VIO desde cero y trayectoria en otro CSV
+            if control is not None and orden_reiniciar(control):
+                n_prueba += 1
+                salida.close()
+                salida = open(carpeta / f"vio_trayectoria_{n_prueba}.csv", "w", encoding="utf-8")
+                salida.write(CABECERA_POSES)
+                pipeline = pipeline_nuevo()
+                t_aviso_ns, intentos_vistos = None, 0
+                print(f"Reiniciado desde el visor (prueba {n_prueba}): QUIETO hasta VIO EN MARCHA...")
             r = pipeline.nueva_imagen(evento[1], evento[2])
             n_imagenes += 1
             if con_vista and n_imagenes % cfg_vista["cada_n_imagenes"] == 0:
@@ -274,6 +319,8 @@ def main():
         salida.close()
         if emisor is not None:
             emisor.close()
+        if control is not None:
+            control.close()
 
     if tiempos:
         print(f"{len(tiempos)} imágenes procesadas. Trayectoria: {carpeta / 'vio_trayectoria.csv'}")

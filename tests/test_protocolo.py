@@ -73,3 +73,8 @@ def test_leer_paquete_rechaza_lo_incorrecto():
     for malo in (b"", paquete[:-1], bytes([7]) + paquete[1:]):
         with pytest.raises(ValueError):
             protocolo.leer_paquete(malo)
+
+# =====================================================================
+# Etapa 16 — Órdenes del visor a pi_vio (puerto de control)
+# =====================================================================
+ORDEN_REINICIAR = b"reiniciar"     # empezar una prueba nueva: el VIO vuelve a inicializarse

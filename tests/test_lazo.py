@@ -65,3 +65,71 @@ def test_error_escala():
     p = np.array([[0.0, 0.0, 0.0], [2.5, 0.0, 0.0], [5.15, 0.0, 0.0]])
     estimada, error = lazo.error_escala(p, 5.0)
     assert estimada == pytest.approx(5.15) and error == pytest.approx(3.0)
+
+
+
+
+# =====================================================================
+# Paso 16.2 — apps/pi_vio.py: la orden de reiniciar
+# =====================================================================
+def test_orden_reiniciar():
+    control = pi_vio.abrir_control(0)                           # 0: un puerto libre cualquiera
+    emisor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        assert not pi_vio.orden_reiniciar(control)             # nada todavía
+        destino = control.getsockname()
+        for _ in range(3):                                      # tres toques seguidos = una orden
+            emisor.sendto(protocolo.ORDEN_REINICIAR, destino)
+        emisor.sendto(b"otra cosa", destino)
+        time.sleep(0.1)
+        assert pi_vio.orden_reiniciar(control)
+        assert not pi_vio.orden_reiniciar(control)             # ya se leyeron todas
+        # Puerto ocupado: aviso y None, el VIO sigue sin control
+        assert pi_vio.abrir_control(destino[1]) is None
+    finally:
+        emisor.close()
+        control.close()
+
+
+def puerto_libre():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    puerto = s.getsockname()[1]
+    s.close()
+    return puerto
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM: solo en Linux (en la Pi)")
+def test_pi_vio_reinicia_y_abre_otro_csv(tmp_path):
+    # pi_vio sobre una grabación sintética: a mitad, "reiniciar" -> VIO nuevo y vio_trayectoria_2.csv
+    from herramientas.grabar_simulacion import guardar_grabacion_sintetica
+    from vio import modelo_camara as mc
+    cfg_sim = copy.deepcopy(cargar_config("simulador")["vio"])
+    cfg_sim["trayectoria"]["duracion_s"] = 10.0
+    K, _, _ = mc.cargar_intrinsecos()
+    guardar_grabacion_sintetica(tmp_path, cfg_sim, K, (640, 480), cargar_config("camara_imu"),
+                                np.random.default_rng(5))
+    puerto = puerto_libre()
+    proceso = subprocess.Popen([sys.executable, "-m", "apps.pi_vio", "--grabacion", str(tmp_path),
+                                "--sin-red", "--sin-calibracion-acc", "--puerto-control", str(puerto)],
+                               cwd=RAIZ_PROYECTO, env=dict(os.environ, PYTHONUNBUFFERED="1"),
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+    emisor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    lineas = []
+    try:
+        for linea in proceso.stdout:
+            lineas.append(linea)
+            if "VIO EN MARCHA" in linea and len(lineas) < 50:
+                emisor.sendto(protocolo.ORDEN_REINICIAR, ("127.0.0.1", puerto))
+            if "Reiniciado desde el visor" in linea:
+                proceso.send_signal(signal.SIGTERM)
+                break
+        salida = "".join(lineas) + proceso.stdout.read()
+        assert proceso.wait(timeout=30) == 0, salida
+    finally:
+        emisor.close()
+        if proceso.poll() is None:
+            proceso.kill()
+    assert "Reiniciado desde el visor (prueba 2)" in salida
+    assert (tmp_path / "vio_trayectoria.csv").read_text(encoding="utf-8").count("\n") > 1   # la 1.ª prueba
+    assert (tmp_path / "vio_trayectoria_2.csv").read_text(encoding="utf-8").startswith("#t_ns")
