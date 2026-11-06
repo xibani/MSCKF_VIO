@@ -1,0 +1,1 @@
+datos/imu_20261105_235204/mav0/imu0/data.csv filter=lfs diff=lfs merge=lfs -text
