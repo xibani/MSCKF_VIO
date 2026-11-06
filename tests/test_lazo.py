@@ -133,3 +133,130 @@ def test_pi_vio_reinicia_y_abre_otro_csv(tmp_path):
     assert "Reiniciado desde el visor (prueba 2)" in salida
     assert (tmp_path / "vio_trayectoria.csv").read_text(encoding="utf-8").count("\n") > 1   # la 1.ª prueba
     assert (tmp_path / "vio_trayectoria_2.csv").read_text(encoding="utf-8").startswith("#t_ns")
+
+
+
+
+
+# =====================================================================
+# Paso 16.3 — apps/visor_web.py: las mismas cifras en vivo y el botón "Nueva prueba"
+# =====================================================================
+def test_visor_web_copia_la_configuracion():
+    # visor_web solo usa la biblioteca estándar: tiene su copia de los valores
+    assert visor_web.PUERTO_CONTROL == cargar_config("vio")["control"]["puerto"]
+    assert visor_web.ORDEN_REINICIAR == protocolo.ORDEN_REINICIAR
+    assert visor_web.RECORRIDO_PASO_MIN_M == CFG["paso_min_m"]
+    assert visor_web.RECORRIDO_MIN_M == CFG["recorrido_min_m"]
+    assert visor_web.CIERRE_BUENO_PCT == CFG["cierre_bueno_pct"]
+    assert visor_web.CIERRE_REGULAR_PCT == CFG["cierre_regular_pct"]
+
+
+def test_visor_web_mismas_cifras_que_lazo():
+    # El cálculo en vivo (sin numpy, punto a punto) da lo mismo que vio/lazo.py
+    temblor = np.random.default_rng(1).normal(0.0, 0.002, (300, 3))
+    p = np.vstack([temblor, cuadrado(2.0, 150)])
+    p[-1] = [0.03, 0.04, 0.0]
+    estado = visor_web.EstadoCompartido()
+    for q in p:
+        visor_web.anadir_punto(estado, [float(v) for v in q])
+    vivo = visor_web.metricas_prueba(estado)
+    referencia = lazo.metricas_lazo(np.arange(len(p)) * 0.05, p, CFG["paso_min_m"], CFG["recorrido_min_m"])
+    assert vivo["recorrido_m"] == pytest.approx(referencia["recorrido_m"], abs=1e-9)
+    assert vivo["cierre_m"] == pytest.approx(referencia["cierre_m"], abs=1e-9)
+    assert vivo["cierre_pct"] == pytest.approx(referencia["cierre_pct"], abs=1e-9)
+    assert vivo["alejamiento_max_m"] == pytest.approx(referencia["alejamiento_max_m"], abs=1e-9)
+    assert vivo["nivel"] == "bueno"                            # 5 cm en ~8 m: 0,6 %
+    # Niveles de color
+    estado.trayectoria[-1] = [0.0, 0.3, 0.0]                   # 30 cm: ~3,8 %
+    assert visor_web.metricas_prueba(estado)["nivel"] == "regular"
+    estado.trayectoria[-1] = [0.0, 0.6, 0.0]                   # 60 cm: ~7,5 %
+    assert visor_web.metricas_prueba(estado)["nivel"] == "malo"
+    assert visor_web.metricas_prueba(visor_web.EstadoCompartido()) is None    # sin trayectoria
+
+
+@pytest.fixture
+def visor_con_control():
+    """visor_web en puertos libres, con un socket haciendo de pi_vio en el puerto de control."""
+    estado = visor_web.EstadoCompartido()
+    pi_falsa = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    pi_falsa.bind(("127.0.0.1", 0))
+    pi_falsa.settimeout(2.0)
+    anterior = (visor_web.ManejadorHTTP.estado, visor_web.ManejadorHTTP.puerto_control)
+    visor_web.ManejadorHTTP.estado = estado
+    visor_web.ManejadorHTTP.puerto_control = pi_falsa.getsockname()[1]
+    servidor = ThreadingHTTPServer(("127.0.0.1", 0), visor_web.ManejadorHTTP)
+    servidor.daemon_threads = True
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    yield estado, servidor.server_address[1], pi_falsa
+    servidor.shutdown()
+    servidor.server_close()
+    pi_falsa.close()
+    visor_web.ManejadorHTTP.estado, visor_web.ManejadorHTTP.puerto_control = anterior
+
+
+def test_boton_nueva_prueba(visor_con_control):
+    estado, puerto_web, pi_falsa = visor_con_control
+    with estado.cerrojo:
+        for q in cuadrado(1.0, 50):
+            visor_web.anadir_punto(estado, list(q))
+        sesion = estado.id_sesion
+    conexion = http.client.HTTPConnection("127.0.0.1", puerto_web, timeout=2.0)
+    conexion.request("POST", "/reiniciar")
+    assert conexion.getresponse().status == 200
+    conexion.close()
+    assert pi_falsa.recvfrom(64)[0] == protocolo.ORDEN_REINICIAR    # la orden llega a "pi_vio"
+    with estado.cerrojo:
+        assert estado.trayectoria == [] and estado.recorrido_m == 0.0
+        assert estado.id_sesion == sesion + 1 and estado.reinicios == 1
+        assert estado.ignorar_hasta > time.monotonic()
+    # Con GET no se reinicia nada (un navegador puede pedir páginas por adelantado)
+    conexion = http.client.HTTPConnection("127.0.0.1", puerto_web, timeout=2.0)
+    conexion.request("GET", "/reiniciar")
+    assert conexion.getresponse().status == 404
+    conexion.close()
+
+
+def test_tras_reiniciar_se_tiran_las_poses_en_camino():
+    estado, parar = visor_web.EstadoCompartido(), threading.Event()
+    receptor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receptor.bind(("127.0.0.1", 0))
+    receptor.settimeout(0.05)
+    hilo = threading.Thread(target=visor_web.bucle_udp, args=(receptor, estado, parar), daemon=True)
+    hilo.start()
+    emisor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        with estado.cerrojo:
+            estado.ignorar_hasta = time.monotonic() + 0.3
+        emisor.sendto(protocolo.empaquetar_pose(1, np.eye(3), np.array([5.0, 5.0, 0.0])), receptor.getsockname())
+        time.sleep(0.4)                                        # pasa la ventana
+        emisor.sendto(protocolo.empaquetar_pose(2, np.eye(3), np.zeros(3)), receptor.getsockname())
+        time.sleep(0.2)
+        with estado.cerrojo:
+            assert estado.trayectoria == [[0.0, 0.0, 0.0]]     # la de la prueba anterior, fuera
+    finally:
+        parar.set()
+        hilo.join(timeout=1.0)
+        emisor.close()
+        receptor.close()
+
+
+def test_pagina_tiene_prueba_y_vista_3d(visor_con_control):
+    _, puerto_web, _ = visor_con_control
+    conexion = http.client.HTTPConnection("127.0.0.1", puerto_web, timeout=2.0)
+    conexion.request("GET", "/")
+    html = conexion.getresponse().read().decode("utf-8")
+    conexion.close()
+    for trozo in ('id="boton_prueba"', 'id="m_pct"', 'id="lienzo_3d"', 'fetch("/reiniciar", { method: "POST" })',
+                  "function dibujarVista3D()"):
+        assert trozo in html
+
+
+def test_vista_3d_sin_espejo():
+    # Los ejes de la vista 3D, copiados de la página: derecha × arriba = dirección del observador
+    for az, el in [(200, 25), (0, 0), (90, 60), (-45, -30)]:
+        a, b = np.radians(az), np.radians(el)
+        derecha = np.array([-np.sin(a), np.cos(a), 0.0])
+        arriba = np.array([-np.sin(b) * np.cos(a), -np.sin(b) * np.sin(a), np.cos(b)])
+        observador = np.array([np.cos(b) * np.cos(a), np.cos(b) * np.sin(a), np.sin(b)])
+        assert np.cross(derecha, arriba) == pytest.approx(observador)
+        assert arriba[2] >= 0                                  # z del mundo nunca sale cabeza abajo

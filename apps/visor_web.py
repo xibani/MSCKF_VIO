@@ -63,6 +63,16 @@ PERIODO_VIDEO_S = 0.03                     # cada cuánto mira el vídeo si hay 
 # debe apuntar hacia donde creemos estar: n_z > 0 (encima) y n_x < 0 (detrás).
 EJES_PANTALLA = {"x": [0.40, 0.30], "y": [-1.0, 0.0], "z": [0.0, 1.0]}
 
+# Etapa 16 — Prueba de trayectoria. Copia literal de config/vio.yaml (prueba, control) y de
+# vio/protocolo.py: este programa solo usa la biblioteca estándar y no lee YAML
+PUERTO_CONTROL = 5007              # UDP de las órdenes a pi_vio (en la propia Pi)
+ORDEN_REINICIAR = b"reiniciar"
+RECORRIDO_PASO_MIN_M = 0.01        # el recorrido se suma a pasos de al menos 1 cm (fuera el temblor)
+RECORRIDO_MIN_M = 0.5              # con menos recorrido, el error de cierre en % no significa nada
+CIERRE_BUENO_PCT = 2.0             # colores del error de cierre (orientativos)
+CIERRE_REGULAR_PCT = 5.0
+IGNORAR_TRAS_REINICIO_S = 0.5      # poses de la prueba anterior que aún estén en camino: fuera
+
 
 def decodificar_paquete(datos):
     """Devuelve (version, t_ns, R, p). R es una lista 3x3 y p una lista [x, y, z]
@@ -128,6 +138,63 @@ class EstadoCompartido:
         self.jpeg = None           # bytes del último JPEG, o None
         self.id_jpeg = 0           # aumenta con cada imagen nueva
         self.imagenes = 0          # imágenes recibidas
+        # Etapa 16: la prueba de trayectoria en curso
+        self.recorrido_m = 0.0     # longitud del camino (a pasos de RECORRIDO_PASO_MIN_M)
+        self.ancla = None          # último punto contado en el recorrido
+        self.alejamiento_max_m = 0.0
+        self.ignorar_hasta = 0.0   # time.monotonic() hasta el que se tiran las poses (tras reiniciar)
+        self.reinicios = 0
+
+
+def distancia(a, b):
+    """Distancia entre dos puntos [x, y, z]."""
+    return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
+
+
+def anadir_punto(estado, p):
+    """Un punto más de la trayectoria, con el recorrido y el alejamiento (con el cerrojo cogido).
+
+    Mismo cálculo que vio/lazo.py -> recorrido (allí con numpy, aquí sin él): se suma la
+    distancia al "ancla" (último punto contado) solo cuando llega a RECORRIDO_PASO_MIN_M.
+    """
+    estado.trayectoria.append(p)
+    if estado.ancla is None:
+        estado.ancla = p
+        return
+    d = distancia(p, estado.ancla)
+    if d >= RECORRIDO_PASO_MIN_M:
+        estado.recorrido_m += d
+        estado.ancla = p
+    estado.alejamiento_max_m = max(estado.alejamiento_max_m, distancia(p, estado.trayectoria[0]))
+
+
+def vaciar_trayectoria(estado):
+    """Prueba nueva: trayectoria y métricas a cero (con el cerrojo cogido)."""
+    estado.trayectoria = []
+    estado.id_sesion += 1
+    estado.recorrido_m = 0.0
+    estado.ancla = None
+    estado.alejamiento_max_m = 0.0
+
+
+def metricas_prueba(estado):
+    """Lo que se muestra en el panel "Prueba de lazo" (con el cerrojo cogido)."""
+    if len(estado.trayectoria) < 2:
+        return None
+    cierre = distancia(estado.trayectoria[-1], estado.trayectoria[0])
+    pct = 100.0 * cierre / estado.recorrido_m if estado.recorrido_m >= RECORRIDO_MIN_M else None
+    if pct is None:
+        nivel = None
+    elif pct <= CIERRE_BUENO_PCT:
+        nivel = "bueno"
+    elif pct <= CIERRE_REGULAR_PCT:
+        nivel = "regular"
+    else:
+        nivel = "malo"
+    return {"recorrido_m": estado.recorrido_m, "cierre_m": cierre, "cierre_pct": pct,
+            "nivel": nivel, "alejamiento_max_m": estado.alejamiento_max_m,
+            "reinicios": estado.reinicios}
+
 
 
 def bucle_udp(sock, estado, parar):
@@ -149,6 +216,10 @@ def bucle_udp(sock, estado, parar):
                 estado.invalidos += 1
             continue
 
+        # 2b) Justo después de "Nueva prueba": poses de la prueba anterior aún en camino
+        if time.monotonic() < estado.ignorar_hasta:
+            continue
+
         # 3) Descartar valores no finitos (si el filtro diverge)
         R_ok = todos_finitos(R[0] + R[1] + R[2])
         p_ok = p is not None and todos_finitos(p)
@@ -158,8 +229,7 @@ def bucle_udp(sock, estado, parar):
             # Si el tiempo retrocede, se ha relanzado pi_vio (o la grabación):
             # empezamos una trayectoria nueva.
             if estado.t_ns is not None and t_ns < estado.t_ns:
-                estado.trayectoria = []
-                estado.id_sesion += 1
+                vaciar_trayectoria(estado)
 
             estado.version = version
             estado.t_ns = t_ns
@@ -171,7 +241,7 @@ def bucle_udp(sock, estado, parar):
             if p is not None and not p_ok:
                 estado.no_finitos += 1
             if p_ok:
-                estado.trayectoria.append(p)
+                anadir_punto(estado, p)
 
 
 def bucle_imagenes(sock, estado, parar):
@@ -200,6 +270,7 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
     # Se rellenan en main() antes de arrancar el servidor
     estado = None
     periodo_envio = 1.0 / 15.0
+    puerto_control = PUERTO_CONTROL
 
     def log_message(self, formato, *args):
         # Silenciar el registro de cada petición para no gastar CPU en la terminal
@@ -216,6 +287,35 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
             self.enviar_foto()
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        if self.path == "/reiniciar":
+            self.reiniciar()
+        else:
+            self.send_error(404)
+
+    def reiniciar(self):
+        """Botón "Nueva prueba": orden a pi_vio por UDP y trayectoria a cero.
+
+        Si pi_vio no está en marcha, la orden se pierde sin más (UDP): no es un error.
+        """
+        orden = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            orden.sendto(ORDEN_REINICIAR, ("127.0.0.1", self.puerto_control))
+        except OSError:
+            pass
+        finally:
+            orden.close()
+        with self.estado.cerrojo:
+            vaciar_trayectoria(self.estado)
+            self.estado.ignorar_hasta = time.monotonic() + IGNORAR_TRAS_REINICIO_S
+            self.estado.reinicios += 1
+        cuerpo = b'{"ok": true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(cuerpo)))
+        self.end_headers()
+        self.wfile.write(cuerpo)
 
     def enviar_pagina(self):
         cuerpo = PAGINA_HTML.encode("utf-8")
@@ -268,6 +368,7 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
                         "invalidos": estado.invalidos,
                         "no_finitos": estado.no_finitos,
                         "imagenes": estado.imagenes,
+                        "prueba": metricas_prueba(estado),
                     }
 
                 texto = "data: " + json.dumps(mensaje) + "\n\n"
@@ -350,6 +451,8 @@ def main():
                         help="puerto donde llegan las imágenes con pistas de pi_vio (5006)")
     parser.add_argument("--puerto-web", type=int, default=8000,
                         help="puerto HTTP para el navegador (8000)")
+    parser.add_argument("--puerto-control", type=int, default=PUERTO_CONTROL,
+                        help="puerto UDP de las órdenes a pi_vio (5007)")
     parser.add_argument("--hz", type=float, default=15.0,
                         help="mensajes por segundo hacia el navegador (15)")
     args = parser.parse_args()
@@ -386,6 +489,7 @@ def main():
     # 2) Servidor HTTP (un hilo por navegador conectado)
     ManejadorHTTP.estado = estado
     ManejadorHTTP.periodo_envio = 1.0 / args.hz
+    ManejadorHTTP.puerto_control = args.puerto_control
     servidor = ThreadingHTTPServer(("0.0.0.0", args.puerto_web), ManejadorHTTP)
 
     ip = ip_local_probable()
@@ -433,6 +537,16 @@ PAGINA_HTML = r"""<!doctype html>
   canvas { width: 100%; aspect-ratio: 1 / 1; display: block; }
   #video { width: 100%; aspect-ratio: 4 / 3; display: block; background: #000; object-fit: contain; }
   .panel.ancho { grid-column: 1 / -1; }
+  /* Etapa 16: prueba de lazo y vista 3D */
+  #cifras { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }
+  .cifra { display: flex; flex-direction: column; }
+  .cifra .etq { font-size: 12px; color: #999; }
+  .cifra .num { font-size: 26px; font-family: monospace; }
+  .num.bueno { color: #66bb6a; }  .num.regular { color: #ffca28; }  .num.malo { color: #ef5350; }
+  #boton_prueba { margin-left: auto; font-size: 17px; padding: 10px 16px; border: 0;
+                  border-radius: 6px; background: #1565c0; color: #fff; }
+  #boton_prueba.confirmar { background: #c62828; }
+  #lienzo_3d { aspect-ratio: 4 / 3; touch-action: none; }   /* el dedo gira la vista, no la página */
 </style>
 </head>
 <body>
@@ -442,6 +556,16 @@ PAGINA_HTML = r"""<!doctype html>
 </div>
 <div id="paneles">
   <div class="panel ancho"><h2>Cámara y pistas (rojo: recién detectada → verde: seguida 20 imágenes o más)</h2><img id="video" alt="Esperando imágenes de pi_vio…"></div>
+    <div class="panel ancho"><h2>Prueba de lazo: sal de una marca, da una vuelta y vuelve a ella</h2>
+    <div id="cifras">
+      <div class="cifra"><span class="etq">recorrido</span><span id="m_recorrido" class="num">—</span></div>
+      <div class="cifra"><span class="etq">distancia al origen</span><span id="m_cierre" class="num">—</span></div>
+      <div class="cifra"><span class="etq">error de cierre</span><span id="m_pct" class="num">—</span></div>
+      <div class="cifra"><span class="etq">máx. alejamiento</span><span id="m_alejamiento" class="num">—</span></div>
+      <button id="boton_prueba">Nueva prueba</button>
+    </div>
+  </div>
+  <div class="panel ancho"><h2>Vista 3D [m] — arrastra: girar · pellizco o rueda: zoom · doble toque: vista inicial</h2><canvas id="lienzo_3d"></canvas></div>
   <div class="panel"><h2>Planta X–Y [m] (flecha roja: eje x de la IMU)</h2><canvas id="lienzo_xy"></canvas></div>
   <div class="panel"><h2>Alzado X–Z [m]</h2><canvas id="lienzo_xz"></canvas></div>
   <div class="panel"><h2>Orientación vista desde detrás de la placa (x rojo, y verde, z azul)</h2><canvas id="lienzo_ori"></canvas></div>
@@ -476,6 +600,7 @@ fuente.onmessage = function (evento) {
   ultimo = m;
   horaUltimoMensaje = Date.now();
   actualizarCabecera();
+  actualizarPrueba(m.prueba):
   hayQueDibujar = true;
 };
 
@@ -715,11 +840,199 @@ function dibujarOrientacion() {
 }
 
 // ------------------------------------------------------------------
+// Etapa 16: panel de la prueba de lazo (las cifras las calcula visor_web.py)
+// ------------------------------------------------------------------
+function actualizarPrueba(pr) {
+  const ponerCifra = function (id, texto, nivel) {
+    const e = document.getElementById(id);
+    e.textContent = texto;
+    e.className = "num" + (nivel ? " " + nivel : "");
+  };
+  if (!pr) {
+    for (const id of ["m_recorrido", "m_cierre", "m_pct", "m_alejamiento"]) ponerCifra(id, "—", null);
+    return;
+  }
+  ponerCifra("m_recorrido", pr.recorrido_m.toFixed(2) + " m", null);
+  ponerCifra("m_cierre", (pr.cierre_m * 100).toFixed(1) + " cm", null);
+  ponerCifra("m_pct", pr.cierre_pct === null ? "—" : pr.cierre_pct.toFixed(1) + " %", pr.nivel);
+  ponerCifra("m_alejamiento", pr.alejamiento_max_m.toFixed(2) + " m", null);
+}
+
+// "Nueva prueba" pide confirmación con un segundo toque (sin ventanas emergentes)
+const botonPrueba = document.getElementById("boton_prueba");
+let confirmarHasta = 0;
+botonPrueba.addEventListener("click", function () {
+  if (Date.now() > confirmarHasta) {
+    confirmarHasta = Date.now() + 3000;
+    botonPrueba.textContent = "¿Seguro? Toca otra vez";
+    botonPrueba.className = "confirmar";
+    setTimeout(function () {
+      if (Date.now() > confirmarHasta) { botonPrueba.textContent = "Nueva prueba"; botonPrueba.className = ""; }
+    }, 3100);
+    return;
+  }
+  confirmarHasta = 0;
+  botonPrueba.textContent = "Nueva prueba";
+  botonPrueba.className = "";
+  trayectoria = [];
+  hayQueDibujar = true;
+  fetch("/reiniciar", { method: "POST" });
+});
+
+// ------------------------------------------------------------------
+// Etapa 16: vista 3D que se gira con el dedo (proyección ortográfica)
+// ------------------------------------------------------------------
+// Observador en la dirección v = (cos el·cos az, cos el·sin az, sin el), mirando al centro.
+// Ejes de pantalla: derecha = (-sin az, cos az, 0), arriba = v × derecha. Como
+// derecha × arriba = v (hacia el observador), el dibujo no sale en espejo (etapa 15.3).
+// Vista inicial: detrás de la placa (-X), algo a su derecha (-Y) y por encima.
+const VISTA_INICIAL = { az: 200, el: 25, zoom: 1 };
+let vista3d = Object.assign({}, VISTA_INICIAL);
+
+function ejesVista3D() {
+  const a = vista3d.az * Math.PI / 180, b = vista3d.el * Math.PI / 180;
+  return {
+    derecha: [-Math.sin(a), Math.cos(a), 0],
+    arriba: [-Math.sin(b) * Math.cos(a), -Math.sin(b) * Math.sin(a), Math.cos(b)],
+  };
+}
+
+const lienzo3d = document.getElementById("lienzo_3d");
+const punteros = new Map();          // dedos (o ratón) apoyados: id -> [x, y]
+let distanciaPinza = null;
+lienzo3d.addEventListener("pointerdown", function (e) {
+  lienzo3d.setPointerCapture(e.pointerId);
+  punteros.set(e.pointerId, [e.clientX, e.clientY]);
+});
+lienzo3d.addEventListener("pointermove", function (e) {
+  if (!punteros.has(e.pointerId)) return;
+  const antes = punteros.get(e.pointerId);
+  punteros.set(e.pointerId, [e.clientX, e.clientY]);
+  if (punteros.size === 1) {          // un dedo: girar (0,4° por píxel)
+    vista3d.az -= (e.clientX - antes[0]) * 0.4;
+    vista3d.el = Math.max(-89, Math.min(89, vista3d.el + (e.clientY - antes[1]) * 0.4));
+  } else if (punteros.size === 2) {   // dos dedos: zoom con la distancia entre ellos
+    const p = Array.from(punteros.values());
+    const d = Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]);
+    if (distanciaPinza) vista3d.zoom *= d / distanciaPinza;
+    distanciaPinza = d;
+  }
+  hayQueDibujar = true;
+});
+function soltarPuntero(e) { punteros.delete(e.pointerId); distanciaPinza = null; }
+lienzo3d.addEventListener("pointerup", soltarPuntero);
+lienzo3d.addEventListener("pointercancel", soltarPuntero);
+lienzo3d.addEventListener("wheel", function (e) {
+  e.preventDefault();
+  vista3d.zoom *= Math.exp(-e.deltaY * 0.001);
+  hayQueDibujar = true;
+}, { passive: false });
+lienzo3d.addEventListener("dblclick", function () {
+  vista3d = Object.assign({}, VISTA_INICIAL);
+  hayQueDibujar = true;
+});
+
+function dibujarVista3D() {
+  const l = prepararLienzo(lienzo3d);
+  const ctx = l.ctx, ancho = l.ancho, alto = l.alto;
+
+  // 1) Caja que contiene la trayectoria y el origen (mínimo 1 m de lado)
+  const minimo = [-0.5, -0.5, -0.5], maximo = [0.5, 0.5, 0.5];
+  for (const q of trayectoria) {
+    for (let i = 0; i < 3; i++) {
+      if (q[i] < minimo[i]) minimo[i] = q[i];
+      if (q[i] > maximo[i]) maximo[i] = q[i];
+    }
+  }
+  const centro = [0, 1, 2].map(function (i) { return (minimo[i] + maximo[i]) / 2; });
+  const radio = Math.hypot(maximo[0] - minimo[0], maximo[1] - minimo[1], maximo[2] - minimo[2]) / 2;
+  const escala = Math.min(ancho, alto) / (2 * radio * 1.1) * vista3d.zoom;   // píxeles por metro
+  const ejes = ejesVista3D();
+  function aPantalla(q) {
+    const d = [q[0] - centro[0], q[1] - centro[1], q[2] - centro[2]];
+    const h = d[0] * ejes.derecha[0] + d[1] * ejes.derecha[1] + d[2] * ejes.derecha[2];
+    const v = d[0] * ejes.arriba[0] + d[1] * ejes.arriba[1] + d[2] * ejes.arriba[2];
+    return [ancho / 2 + h * escala, alto / 2 - v * escala];
+  }
+  function segmento(a, b) {
+    const pa = aPantalla(a), pb = aPantalla(b);
+    linea(ctx, pa[0], pa[1], pb[0], pb[1]);
+  }
+
+  // 2) Suelo: rejilla en la cota más baja de la trayectoria (o del origen), con un paso "redondo".
+  //    (No en minimo[2]: la caja tiene 1 m de lado como mínimo para el zoom, y el suelo
+  //    quedaría por debajo de la trayectoria, que parecería flotar.)
+  let suelo = 0;
+  for (const q of trayectoria) suelo = Math.min(suelo, q[2]);
+  const paso = pasoRejilla(Math.max(maximo[0] - minimo[0], maximo[1] - minimo[1]));
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#2c2c2c";
+  const x0 = Math.floor(minimo[0] / paso) * paso, x1 = Math.ceil(maximo[0] / paso) * paso;
+  const y0 = Math.floor(minimo[1] / paso) * paso, y1 = Math.ceil(maximo[1] / paso) * paso;
+  for (let x = x0; x <= x1 + 1e-9; x += paso) segmento([x, y0, suelo], [x, y1, suelo]);
+  for (let y = y0; y <= y1 + 1e-9; y += paso) segmento([x0, y, suelo], [x1, y, suelo]);
+
+  // 3) Ejes del mundo en el origen (un paso de largo)
+  const coloresEjes = ["#ef5350", "#66bb6a", "#42a5f5"];
+  ctx.globalAlpha = 0.5;
+  for (let i = 0; i < 3; i++) {
+    const e = [0, 0, 0];
+    e[i] = paso;
+    ctx.strokeStyle = coloresEjes[i];
+    segmento([0, 0, 0], e);
+  }
+  ctx.globalAlpha = 1;
+  if (trayectoria.length === 0) return;
+
+  // 4) Sombra de la trayectoria en el suelo (ayuda a ver la altura) y la trayectoria
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#3a3a3a";
+  ctx.beginPath();
+  trayectoria.forEach(function (q, k) {
+    const s = aPantalla([q[0], q[1], suelo]);
+    if (k === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]);
+  });
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#4fc3f7";
+  ctx.beginPath();
+  trayectoria.forEach(function (q, k) {
+    const s = aPantalla(q);
+    if (k === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]);
+  });
+  ctx.stroke();
+
+  // 5) Lo que falta para cerrar el lazo: del punto actual al de salida (naranja, discontinuo)
+  const salida = trayectoria[0], actual = trayectoria[trayectoria.length - 1];
+  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = "#ffa726";
+  segmento(actual, salida);
+  ctx.setLineDash([]);
+
+  // 6) Salida (verde) y posición actual (amarillo) con los ejes de la IMU
+  const ps = aPantalla(salida), pa = aPantalla(actual);
+  ctx.fillStyle = "#66bb6a";
+  ctx.beginPath(); ctx.arc(ps[0], ps[1], 6, 0, 2 * Math.PI); ctx.fill();
+  if (ultimo && ultimo.R) {
+    const largo = radio * 0.25;
+    ctx.lineWidth = 3;
+    for (let j = 0; j < 3; j++) {
+      ctx.strokeStyle = coloresEjes[j];
+      segmento(actual, [actual[0] + ultimo.R[0][j] * largo, actual[1] + ultimo.R[1][j] * largo,
+                        actual[2] + ultimo.R[2][j] * largo]);
+    }
+  }
+  ctx.fillStyle = "#ffeb3b";
+  ctx.beginPath(); ctx.arc(pa[0], pa[1], 5, 0, 2 * Math.PI); ctx.fill();
+}
+
+// ------------------------------------------------------------------
 // Bucle de dibujo: solo redibuja cuando ha llegado un mensaje nuevo
 // ------------------------------------------------------------------
 function cuadro() {
   if (hayQueDibujar) {
     hayQueDibujar = false;
+    dibujarVista3D();
     dibujarVista("lienzo_xy", 0, 1);
     dibujarVista("lienzo_xz", 0, 2);
     dibujarOrientacion();
