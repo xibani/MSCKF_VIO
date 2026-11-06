@@ -9,7 +9,9 @@ mediante dos eventos (listo / parar) y contadores compartidos.
 
 import os
 import queue
+import re
 import signal
+import subprocess
 
 from captura import euroc, mpu6050
 
@@ -58,8 +60,6 @@ def ejecutar(carpeta, cfg, evento_listo, evento_parar, n_muestras, n_errores):
         bucle_imu(bus, cfg, ajustes, archivo, evento_parar, n_muestras, n_errores)
 
 
-
-
 # =====================================================================
 # Etapa 13 — Las muestras por una cola, para el VIO en vivo
 # =====================================================================
@@ -98,3 +98,39 @@ def ejecutar_cola(cfg, cola, evento_listo, evento_parar, n_perdidas, n_errores):
         evento_listo.set()
         bucle_cola(mpu6050.leer_continuo(bus, cfg, ajustes, contador), cola, evento_parar,
                    n_perdidas, n_errores, contador)
+
+
+
+# =====================================================================
+# Etapa 7.3 — Un solo lector de la IMU a la vez
+# =====================================================================
+def otros_lectores_imu(modulos):
+    """Otros programas del proyecto que están leyendo la IMU ahora mismo.
+
+    Dos lectores a la vez se roban las muestras: los dos sondean INT_STATUS y, al leerlo,
+    el primero borra el aviso de "dato listo"; el otro ya no ve esa muestra.
+    modulos: lista de módulos (p. ej. "apps.pi_vio"), de config/imu.yaml -> lectores.
+    Devuelve: lista de (pid, módulo). Solo en Linux (usa pgrep, que busca en la línea de
+    órdenes de cada proceso: "python -m apps.pi_vio ...").
+    """
+    propios = {os.getpid(), os.getppid()}
+    encontrados = []
+    for modulo in modulos:
+        patron = "-m " + re.escape(modulo) + "( |$)"           # el módulo exacto, no uno que empiece igual
+        # "--": el patrón empieza por "-m" y, sin esto, pgrep lo tomaría por una opción suya
+        resultado = subprocess.run(["pgrep", "-f", "--", patron], capture_output=True, text=True)
+        for pid in resultado.stdout.split():
+            if int(pid) not in propios:
+                encontrados.append((int(pid), modulo))
+    return encontrados
+
+
+def avisar_si_hay_otro_lector(modulos):
+    """Imprime quién está leyendo la IMU y cómo pararlo. Devuelve: True si hay alguno."""
+    otros = otros_lectores_imu(modulos)
+    for pid, modulo in otros:
+        print(f"ERROR: la IMU ya la está leyendo {modulo} (PID {pid}).")
+    if otros:
+        print("Dos programas a la vez se roban las muestras. Para los servicios con:")
+        print("    sudo systemctl stop vio-pi vio-visor-web")
+    return bool(otros)

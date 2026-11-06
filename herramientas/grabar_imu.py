@@ -12,7 +12,7 @@ from datetime import datetime
 
 from smbus2 import SMBus
 
-from captura import euroc, mpu6050
+from captura import euroc, mpu6050, proceso_imu
 from vio.config import RAIZ_PROYECTO, cargar_config
 
 
@@ -25,6 +25,8 @@ def main():
     # --- 2. Configuración y carpeta de salida ---
     cfg_imu = cargar_config("imu")
     cfg_proyecto = cargar_config("proyecto")
+    if proceso_imu.avisar_si_hay_otro_lector(cfg_imu["lectores"]):   # p. ej. el servicio vio-pi
+        return
     nombre = "imu_" + datetime.now().strftime("%Y%m%d_%H%M%S")
     carpeta = RAIZ_PROYECTO / cfg_proyecto["carpeta_datos"] / nombre
     ruta_csv = euroc.ruta_imu(carpeta)

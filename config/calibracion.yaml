@@ -4,7 +4,7 @@
 tablero:
   esquinas_x: 9            # esquinas INTERIORES en horizontal (un tablero de 10 x 7 cuadros)
   esquinas_y: 6            # esquinas interiores en vertical
-  lado_m: 0.024            # lado de un cuadro, MEDIDO con regla sobre el papel impreso [m]
+  lado_m: 0.025            # lado de un cuadro, MEDIDO con regla sobre el papel impreso [m]
 
 camara:
   imagenes_objetivo: 30    # imágenes a capturar
@@ -27,7 +27,10 @@ allan:                     # etapa 7.3: ruido de la IMU por varianza de Allan
   fraccion_tau_max: 0.1    # τ máximo = T/10: con menos de ~10 clusters σ sale con mucho error
   tau_ruido_blanco_s: [0.1, 1.0]   # tramo de la recta -1/2 (por debajo de 0,1 s influye el DLPF)
   pendiente_paseo_min: 0.3 # tramo del paseo: pendiente local por encima de esto (recta +1/2)
-  huecos_max_pct: 0.1      # muestras perdidas por encima de este %: se avisa
+  perdidas_max_pct: 1.0    # más muestras perdidas: grabación NO válida (¿otro programa leyendo la IMU?)
+  caida_joroba: 2.0        # la curva sube y vuelve a bajar este factor: perturbación periódica
+  bloque_periodo_s: 1.0    # medias de 1 s antes de buscar el periodo en el espectro
+  periodo_min_s: 20.0      # periodos más cortos no se buscan (no forman joroba a la derecha)
   factor_filtro: 2.0       # ruido para el MSCKF = medido × esto (en reposo sale optimista)
   factor_kalibr: 10.0      # el wiki de Kalibr recomienda ~×10 en IMU MEMS baratas
   referencia_ruido_gir: 8.7e-5   # hoja de datos de la MPU-6050 [rad/s/√Hz], para comparar

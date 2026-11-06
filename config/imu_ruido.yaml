@@ -1,53 +1,61 @@
 # Ruido de la IMU por varianza de Allan: generado por herramientas/analizar_allan.py
 # Valores MEDIDOS en reposo (sin inflar). Unidades: N [unidad/√Hz], K [unidad/s/√Hz]
-ruido_gir: 7.498915092199715e-05
-paseo_sesgo_gir: 2.0456461598563133e-05
-ruido_acc: 0.0019100011667767046
-paseo_sesgo_acc: 0.0013497536253981519
+ruido_gir: 7.794449907216788e-05
+paseo_sesgo_gir: 6.270759920392229e-06
+ruido_acc: 0.0019008709812231546
+paseo_sesgo_acc: 0.00015053881542405537
 por_eje:
   gir:
     x:
-      N: 6.18717417211826e-05
-      K: 1.1599925918188018e-05
+      N: 6.488225673199525e-05
+      K: 1.5531995548502191e-06
       K_observado: true
-      B: 4.745677232132907e-05
-      tau_B_s: 8.820791298000001
+      periodica: false
+      B: 2.9797453301323215e-05
+      tau_B_s: 266.76
     y:
-      N: 7.498915092199715e-05
-      K: 2.0456461598563133e-05
+      N: 7.794449907216788e-05
+      K: 6.270759920392229e-06
       K_observado: true
-      B: 6.725285748886548e-05
-      tau_B_s: 6.97941399
+      periodica: false
+      B: 5.809960002652232e-05
+      tau_B_s: 10.425
     z:
-      N: 6.3376549353353e-05
-      K: 7.041861579430602e-06
+      N: 6.623690072590842e-05
+      K: 1.9520889970347547e-06
       K_observado: true
-      B: 6.13343472417896e-05
-      tau_B_s: 6.97941399
+      periodica: false
+      B: 3.612080324060833e-05
+      tau_B_s: 16.565
   acc:
     x:
-      N: 0.0013022725154780272
-      K: 0.00010541064931769234
+      N: 0.0012990357257979133
+      K: 1.6839020634352763e-05
       K_observado: true
-      B: 0.0008647217258486527
-      tau_B_s: 11.142312689
+      periodica: false
+      B: 0.000494336358139473
+      tau_B_s: 83.795
     y:
-      N: 0.0013140392352157418
-      K: 5.732804533101487e-05
-      K_observado: true
-      B: 0.0004984082233023201
-      tau_B_s: 72.402757753
+      N: 0.0013223071928955001
+      K: 4.9350452528129776e-06
+      K_observado: false
+      periodica: false
+      B: 0.00019871053895771968
+      tau_B_s: 2144.455
     z:
-      N: 0.0019100011667767046
-      K: 0.0013497536253981519
+      N: 0.0019008709812231546
+      K: 0.00015053881542405537
       K_observado: true
-      B: 0.002250831928809644
-      tau_B_s: 2.737316267
+      periodica: false
+      B: 0.0014207973219930508
+      tau_B_s: 10.425
 info:
-  fecha: '2026-11-05T16:34:47'
-  grabacion: imu_20261105_132330
+  fecha: '2026-11-06T06:05:12'
+  grabacion: imu_20261105_235204
   descartado_inicio_s: 120
-  duracion_s: 7079.9977
-  muestras: 471095
-  perdidas: 943810
-  perdidas_pct: 66.7048
+  motivos_no_valida: []
+  duracion_s: 21479.9982
+  muestras: 4288913
+  frecuencia_real_hz: 199.67
+  perdidas: 484
+  perdidas_pct: 0.0113

@@ -93,6 +93,58 @@ def paseo_sesgo(tau, sigma, pendiente_min):
     return float(sigma[-1] * np.sqrt(3.0 / tau[-1])), False
 
 
+def perturbacion_periodica(tau, sigma, tau_desde, caida):
+    """¿Sube la curva y vuelve a bajar? Es la firma de una perturbación periódica.
+
+    Un paseo aleatorio solo hace SUBIR σ(τ). Una oscilación de periodo T0 (p. ej. la
+    temperatura cuando el ventilador se enciende y se apaga) da una joroba: para una
+    sinusoide σ(τ) ∝ sin²(π·τ/T0) / (π·τ/T0), con el máximo en τ ≈ 0,37·T0, ceros en
+    τ = k·T0 y caída como 1/τ.
+    Para cada punto j (con τ ≥ tau_desde) se mira cuántas veces es más alto que lo más bajo
+    ANTES de él (subida) y que lo más bajo DESPUÉS (bajada). Hay joroba si algún punto es
+    `caida` veces más alto por los dos lados. (No vale buscar solo el máximo: con mucho ruido
+    blanco, σ(1 s) puede ser mayor que la joroba.)
+    Devuelve: True si hay joroba.
+    """
+    zona = tau >= tau_desde
+    s = sigma[zona]
+    if len(s) < 3:
+        return False
+    minimo_hasta = np.minimum.accumulate(s)                 # minimo_hasta[j] = min(s[0..j])
+    minimo_desde = np.minimum.accumulate(s[::-1])[::-1]     # minimo_desde[j] = min(s[j..fin])
+    subida = s[1:-1] / minimo_hasta[:-2]                    # punto j = 1..n-2 frente a lo anterior
+    bajada = s[1:-1] / minimo_desde[2:]                     # y frente a lo posterior
+    return bool(np.max(np.minimum(subida, bajada)) >= caida)
+
+
+def periodo_dominante(t_s, x, bloque_s, periodo_min_s):
+    """Periodo de la oscilación más fuerte de la señal [s], para saber de dónde viene la joroba.
+
+    t_s: array (n,) instantes REALES de cada muestra [s] (si faltan muestras, contar muestras
+    en vez de segundos encogería el tiempo y el periodo). x: array (n,) la señal.
+    (De la curva de Allan el periodo sale mal: el lóbulo principal puede quedar tapado por el
+    ruido blanco. En el espectro, una oscilación es una raya.)
+    1. Medias por bloques de bloque_s segundos: quitan casi todo el ruido blanco. Un bloque
+       sin muestras se rellena interpolando entre sus vecinos.
+    2. Fuera la recta de tendencia (una deriva lenta no es una oscilación).
+    3. Pico del espectro entre periodo_min_s y la mitad de la duración.
+    """
+    bloque = np.floor((t_s - t_s[0]) / bloque_s).astype(int)
+    n_bloques = int(bloque[-1]) + 1
+    suma = np.bincount(bloque, weights=x, minlength=n_bloques)
+    cuenta = np.bincount(bloque, minlength=n_bloques)
+    centros = (np.arange(n_bloques) + 0.5) * bloque_s
+    llenos = cuenta > 0
+    medias = np.interp(centros, centros[llenos], suma[llenos] / cuenta[llenos])
+    medias = medias - np.polyval(np.polyfit(centros, medias, 1), centros)
+    potencia = np.abs(np.fft.rfft(medias)) ** 2
+    frecuencias = np.fft.rfftfreq(n_bloques, d=bloque_s)
+    duracion = n_bloques * bloque_s
+    validas = np.flatnonzero((frecuencias >= 2.0 / duracion) & (frecuencias <= 1.0 / periodo_min_s))
+    k = validas[np.argmax(potencia[validas])]
+    return float(1.0 / frecuencias[k])
+
+
 def inestabilidad_sesgo(tau, sigma):
     """Inestabilidad del sesgo B (solo informativa: el filtro no la usa) y dónde ocurre.
 
@@ -102,20 +154,32 @@ def inestabilidad_sesgo(tau, sigma):
     return float(sigma[i] / FACTOR_INESTABILIDAD), float(tau[i])
 
 
-def analizar_eje(x, dt, cfg):
+def analizar_eje(x, dt, cfg, t_s=None):
     """Curva de Allan y parámetros de un eje.
 
     cfg: sección "allan" de config/calibracion.yaml.
-    Devuelve: dict con tau, sigma, N, K, K_observado, B y tau_B.
+    t_s: instantes reales de las muestras [s], solo para el periodo de una perturbación
+        (si no se dan, se suponen equiespaciadas: t = k·dt).
+    Devuelve: dict con tau, sigma, N, K, K_observado, periodica, periodo_s, B y tau_B.
     """
     m = tamanos_cluster(len(x), cfg["puntos_por_decada"], cfg["fraccion_tau_max"])
     tau, sigma = desviacion_allan(x, dt, m)
     tau_ini, tau_fin = cfg["tau_ruido_blanco_s"]
     N = ruido_blanco(tau, sigma, tau_ini, tau_fin)
-    K, observado = paseo_sesgo(tau, sigma, cfg["pendiente_paseo_min"])
+    periodica = perturbacion_periodica(tau, sigma, tau_fin, cfg["caida_joroba"])
+    if periodica:
+        # Lo que sube es la oscilación, no un paseo: K no se puede medir. Solo queda la cota
+        # del último punto (σ² ≥ K²·τ/3 sigue valiendo con la oscilación encima)
+        K, observado = float(sigma[-1] * np.sqrt(3.0 / tau[-1])), False
+        if t_s is None:
+            t_s = np.arange(len(x)) * dt
+        periodo = periodo_dominante(t_s, x, cfg["bloque_periodo_s"], cfg["periodo_min_s"])
+    else:
+        K, observado = paseo_sesgo(tau, sigma, cfg["pendiente_paseo_min"])
+        periodo = None
     B, tau_B = inestabilidad_sesgo(tau, sigma)
     return {"tau": tau, "sigma": sigma, "N": N, "K": K, "K_observado": observado,
-            "B": B, "tau_B": tau_B}
+            "periodica": periodica, "periodo_s": periodo, "B": B, "tau_B": tau_B}
 
 
 def guardar_ruido_imu(ruta, adoptado, por_eje, info):

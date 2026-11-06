@@ -1,6 +1,10 @@
 """tests/test_proceso_imu.py — Tests del bucle de grabación de la IMU (sin hardware)."""
 
+import os
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 from captura import euroc, mpu6050, proceso_imu
 from vio.config import cargar_config
@@ -45,3 +49,24 @@ def test_bucle_imu_escribe_hasta_que_se_le_dice_parar(tmp_path):
     assert n_errores.value == 0
     assert (t_ns[1:] >= t_ns[:-1]).all()        # marcas que no retroceden
     assert abs(a[:, 2] - 9.80665).max() < 1e-5
+
+
+# =====================================================================
+# Etapa 7.3 — Un solo lector de la IMU a la vez
+# =====================================================================
+@pytest.mark.skipif(sys.platform == "win32", reason="pgrep: solo en Linux (en la Pi)")
+def test_otros_lectores_imu():
+    # Un proceso cualquiera con "-m apps.pi_vio" en su línea de órdenes, como el servicio vio-pi
+    import subprocess
+    import time
+    falso = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)", "-m", "apps.pi_vio"])
+    try:
+        time.sleep(0.3)
+        otros = proceso_imu.otros_lectores_imu(["apps.pi_vio", "apps.pi"])
+        assert (falso.pid, "apps.pi_vio") in otros
+        assert all(modulo != "apps.pi" for _, modulo in otros)    # "apps.pi" no es "apps.pi_vio"
+        assert all(pid != os.getpid() for pid, _ in otros)        # uno mismo no cuenta
+    finally:
+        falso.kill()
+        falso.wait()
+    assert (falso.pid, "apps.pi_vio") not in proceso_imu.otros_lectores_imu(["apps.pi_vio"])
