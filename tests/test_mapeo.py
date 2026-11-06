@@ -21,7 +21,7 @@ from vio import mapeo
 from vio import msckf as ms
 from vio import protocolo
 
-# from vio import reconstruccion as rec
+from vio import reconstruccion as rec
 from vio import simulador as sim
 from vio import so3
 from vio.config import RAIZ_PROYECTO, cargar_config
@@ -344,3 +344,230 @@ def test_paquetes_mapa_de_pi_vio():
         "keyframe": None,
     }
     assert paquetes_mapa(sin_nada, K, DIST, CFG_MAPEO) == []
+
+
+# =====================================================================
+# Paso 17.3 — Reconstructor en el PC
+# =====================================================================
+def test_mapa_disperso_media_por_id():
+    mapa = rec.MapaDisperso()
+    mapa.anadir([7, 3], np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 5.0]]))
+    mapa.anadir(
+        [7], np.array([[3.0, 2.0, 0.0]])
+    )  # el mismo punto, triangulado otra vez
+    ids, p_w, cuentas = mapa.puntos()
+    assert list(ids) == [3, 7] and list(cuentas) == [1, 2] and len(mapa) == 2
+    assert p_w == pytest.approx(np.array([[0.0, 0.0, 5.0], [2.0, 1.0, 0.0]]))
+    assert rec.MapaDisperso().puntos()[1].shape == (0, 3)
+
+
+def test_reconstructor_tipos_de_paquete():
+    r = rec.Reconstructor()
+    kf = keyframe_de_prueba(n=20)
+    assert (
+        r.procesar(protocolo.empaquetar_puntos(1, np.array([1, 2]), np.ones((2, 3)))[0])
+        == "puntos"
+    )
+    assert (
+        r.procesar(protocolo.empaquetar_keyframe(kf, K, DIST, (640, 480), b"\xff\xd8x"))
+        == "keyframe"
+    )
+    assert (
+        r.procesar(protocolo.empaquetar_pose(0, np.eye(3), np.zeros(3))) == "malos"
+    )  # otro puerto
+    assert r.procesar(b"") == "malos" and r.procesar(b"\x05basura") == "malos"
+    assert r.recuentos == {"puntos": 1, "keyframe": 1, "malos": 3}
+    assert len(r.keyframes) == 1 and len(r.disperso) == 2
+    assert "keyframes    1 | puntos      2" in r.resumen()
+
+
+def test_puntos_keyframe_en_mundo():
+    R_w_c = so3.exp_so3([0.2, 0.1, -0.4])
+    p_w_c = np.array([1.0, 2.0, 0.5])
+    p_w = np.array([[0.5, 4.0, 1.0], [2.0, 3.0, -0.5]])
+    p_c = (p_w - p_w_c) @ R_w_c  # R_w_cᵀ·(p_w - p_w_c), fila a fila
+    kf = {
+        "R_w_c": R_w_c,
+        "p_w_c": p_w_c,
+        "xy": p_c[:, :2] / p_c[:, 2:3],
+        "z": p_c[:, 2],
+    }
+    assert rec.puntos_keyframe_en_mundo(kf) == pytest.approx(p_w)
+
+
+def test_ply_ida_y_vuelta(tmp_path):
+    p_w = np.random.default_rng(2).uniform(-3, 3, (500, 3))
+    colores = rec.colores_por_altura(p_w[:, 2])
+    assert colores.shape == (500, 3) and colores.dtype == np.uint8
+    rec.guardar_ply(tmp_path / "n.ply", p_w, colores)
+    texto = (tmp_path / "n.ply").read_bytes()
+    assert texto.startswith(
+        b"ply\nformat binary_little_endian 1.0\nelement vertex 500\n"
+    )
+    assert len(texto) == texto.index(b"end_header\n") + len(b"end_header\n") + 500 * 15
+    leido, colores_leidos = rec.leer_ply(tmp_path / "n.ply")
+    assert leido == pytest.approx(p_w, rel=1e-6, abs=1e-6) and np.array_equal(
+        colores_leidos, colores
+    )
+
+
+def test_reconstructor_guardar(tmp_path):
+    r = rec.Reconstructor()
+    for semilla in range(3):
+        kf = keyframe_de_prueba(n=20, semilla=semilla)
+        kf.indice = semilla
+        jpeg = cv2.imencode(".jpg", kf.gris, [cv2.IMWRITE_JPEG_QUALITY, 70])[
+            1
+        ].tobytes()
+        r.procesar(protocolo.empaquetar_keyframe(kf, K, DIST, (640, 480), jpeg))
+    r.procesar(
+        protocolo.empaquetar_puntos(
+            0, np.arange(50), np.random.default_rng(0).normal(0, 1, (50, 3))
+        )[0]
+    )
+    rutas = r.guardar(tmp_path / "salida")
+    assert set(rutas) == {"ply", "keyframes", "figura"}
+    filas = (
+        (tmp_path / "salida" / "keyframes.csv").read_text(encoding="utf-8").splitlines()
+    )
+    assert filas[0] == rec.CABECERA_KEYFRAMES.strip() and len(filas) == 4
+    assert all(len(f.split(",")) == len(filas[0].split(",")) for f in filas[1:])
+    assert rec.decodificar_gris(r.keyframes[0]).shape == (480, 640)
+    assert (
+        tmp_path / "salida" / "keyframes" / "000002.jpg"
+    ).read_bytes() == r.keyframes[2]["jpeg"]
+    assert rec.Reconstructor().guardar(tmp_path / "vacio") == {}
+
+
+# =====================================================================
+# De principio a fin: grabación -> pi_vio -> mapa.paquetes -> pc_mapa -> PLY
+# =====================================================================
+def test_mapa_de_principio_a_fin(tmp_path):
+    from herramientas.grabar_simulacion import guardar_grabacion_sintetica
+    from scipy.spatial import cKDTree
+
+    cfg_vio = copy.deepcopy(cargar_config("simulador")["vio"])
+    cfg_vio["trayectoria"]["duracion_s"] = 10.0
+    s = guardar_grabacion_sintetica(
+        tmp_path, cfg_vio, K, (640, 480), EXT, np.random.default_rng(3)
+    )
+
+    # 1. pi_vio sobre la grabación (como en la Pi, pero sin red): escribe mapa.paquetes
+    entorno = dict(os.environ, PYTHONUNBUFFERED="1")
+    vio = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "apps.pi_vio",
+            "--grabacion",
+            str(tmp_path),
+            "--sin-red",
+            "--sin-calibracion-acc",
+        ],
+        cwd=RAIZ_PROYECTO,
+        env=entorno,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=300,
+    )
+    assert vio.returncode == 0, vio.stdout + vio.stderr
+    assert (
+        "keyframes de mapeo" in vio.stdout
+        and (tmp_path / CFG_MAPEO["archivo"]).exists()
+    )
+
+    # 2. pc_mapa repite el archivo y guarda el mapa
+    pc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "apps.pc_mapa",
+            "--archivo",
+            str(tmp_path / CFG_MAPEO["archivo"]),
+        ],
+        cwd=RAIZ_PROYECTO,
+        env=entorno,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert pc.returncode == 0, pc.stdout + pc.stderr
+    salida = tmp_path / "mapa"
+    assert (salida / "mapa.png").exists()
+    p_mapa, _ = rec.leer_ply(salida / "puntos_3d.ply")
+    n_keyframes = (
+        len((salida / "keyframes.csv").read_text(encoding="utf-8").splitlines()) - 1
+    )
+    assert len(p_mapa) > 200 and n_keyframes >= 8
+
+    # 3. Frente a la verdad: los puntos del simulador llevados al mundo del filtro (que arranca
+    #    con la orientación y la posición de la primera pose estimada)
+    t_est, p_est, R_est = leer_poses(tmp_path / "vio_trayectoria.csv")
+    t_ver, p_ver, R_ver = leer_poses(tmp_path / "verdad.csv")
+    k = int(np.searchsorted(t_ver, t_est[0]))
+    R_alin = R_est[0] @ R_ver[k].T
+    verdad_en_filtro = (s["puntos"] - p_ver[k]) @ R_alin.T + p_est[0]
+    distancia, _ = cKDTree(verdad_en_filtro).query(p_mapa)
+    assert np.median(distancia) < 0.08 and np.percentile(distancia, 90) < 0.15
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="SIGINT a otro proceso: solo en Linux"
+)
+def test_pc_mapa_en_directo(tmp_path):
+    # pc_mapa escuchando; le llegan paquetes por UDP; Ctrl+C (SIGINT) -> guarda el mapa
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as libre:
+        libre.bind(("127.0.0.1", 0))
+        puerto = libre.getsockname()[1]
+    proceso = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "apps.pc_mapa",
+            "--puerto",
+            str(puerto),
+            "--salida",
+            str(tmp_path),
+        ],
+        cwd=RAIZ_PROYECTO,
+        env=dict(os.environ, PYTHONUNBUFFERED="1"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        assert "Escuchando UDP" in proceso.stdout.readline()
+        kf = keyframe_de_prueba(n=20)
+        paquetes = [
+            protocolo.empaquetar_keyframe(
+                kf,
+                K,
+                DIST,
+                (640, 480),
+                cv2.imencode(".jpg", kf.gris, [cv2.IMWRITE_JPEG_QUALITY, 70])[
+                    1
+                ].tobytes(),
+            ),
+            *protocolo.empaquetar_puntos(1, np.arange(30), np.ones((30, 3))),
+        ]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as emisor:
+            for datos in paquetes:
+                emisor.sendto(datos, ("127.0.0.1", puerto))
+        time.sleep(1.5)
+        proceso.send_signal(signal.SIGINT)
+        salida, _ = proceso.communicate(timeout=30)
+    finally:
+        if proceso.poll() is None:
+            proceso.kill()
+    assert proceso.returncode == 0, salida
+    assert "Mapa guardado" in salida and (tmp_path / "puntos_3d.ply").exists()
+    assert (
+        list(protocolo.leer_archivo_paquetes(tmp_path / CFG_MAPEO["archivo"]))
+        == paquetes
+    )  # la copia
+    assert (
+        len((tmp_path / "keyframes.csv").read_text(encoding="utf-8").splitlines()) == 2
+    )
