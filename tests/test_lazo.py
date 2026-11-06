@@ -260,3 +260,33 @@ def test_vista_3d_sin_espejo():
         observador = np.array([np.cos(b) * np.cos(a), np.cos(b) * np.sin(a), np.sin(b)])
         assert np.cross(derecha, arriba) == pytest.approx(observador)
         assert arriba[2] >= 0                                  # z del mundo nunca sale cabeza abajo
+
+
+
+
+# =====================================================================
+# Paso 16.4 — herramientas/informe_lazo.py
+# =====================================================================
+def guardar_trayectoria(ruta, p):
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write(CABECERA_POSES)
+        for k, q in enumerate(p):
+            f.write(linea_pose(k * 50_000_000, so3.exp_so3([0.0, 0.0, 0.01 * k]), q))
+
+
+def test_informe_lazo(tmp_path):
+    from herramientas.informe_lazo import elegir_csv, informe
+    p = cuadrado(2.0, 100)
+    p[-1] = [0.0, 0.0, 0.12]                                   # llega 12 cm por encima de la salida
+    guardar_trayectoria(tmp_path / "vio_trayectoria.csv", p)
+    time.sleep(0.05)
+    guardar_trayectoria(tmp_path / "vio_trayectoria_2.csv", np.linspace([0, 0, 0], [5.2, 0, 0], 200))
+    assert elegir_csv(tmp_path).name == "vio_trayectoria_2.csv"           # la más reciente
+    # Lazo cerrado
+    m = informe(tmp_path / "vio_trayectoria.csv", CFG)
+    assert m["cierre_m"] == pytest.approx(0.12) and m["cierre_pct"] == pytest.approx(1.5, rel=0.03)
+    assert (tmp_path / "vio_trayectoria_informe.png").exists()
+    # Recta medida de 5 m que el VIO estima en 5,2 m: +4 % de escala
+    m = informe(tmp_path, CFG, distancia_real_m=5.0)
+    assert m["error_escala_pct"] == pytest.approx(4.0)
+    assert (tmp_path / "vio_trayectoria_2_informe.png").exists()
