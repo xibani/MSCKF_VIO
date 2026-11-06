@@ -22,3 +22,12 @@ vista:                        # etapa 14: la imagen con sus pistas, para el viso
   calidad_jpeg: 70            # 0-100; si no cabe en un paquete UDP, se baja sola
   cola_pista: 10              # últimas posiciones de cada pista que se dibujan
   longitud_larga: 20          # a partir de esta longitud, la pista se dibuja en verde
+
+prueba:                       # etapa 16: pruebas de trayectoria con datos reales (sin verdad)
+  paso_min_m: 0.01            # el recorrido se suma a pasos de al menos 1 cm (fuera el temblor)
+  recorrido_min_m: 0.5        # con menos recorrido, el error de cierre en % no significa nada
+  cierre_bueno_pct: 2.0       # orientativo: verde por debajo
+  cierre_regular_pct: 5.0     # amarillo hasta aquí; rojo por encima
+
+control:                      # etapa 16: órdenes del visor web a pi_vio
+  puerto: 5007                # UDP, solo en la propia Pi (127.0.0.1)
