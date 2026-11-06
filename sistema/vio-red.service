@@ -1,0 +1,17 @@
+# sistema/vio-red.service — Plantilla del servicio de red al encender (etapa 17).
+# No se copia a mano: sistema/red.sh instalar cambia @PROYECTO@, @ESPERA@ y @CONEXION@
+# y la instala en /etc/systemd/system/.
+
+[Unit]
+Description=VIO-Pi: Wi-Fi conocida o, si no hay ninguna, punto de acceso propio
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+# Se ejecuta una vez al arrancar y termina (como root: necesita activar conexiones)
+Type=oneshot
+ExecStart=/bin/bash @PROEYCTO@/sistema/red_arranque.sh @ESPERA@ @CONEXION@
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
