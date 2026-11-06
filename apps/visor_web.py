@@ -600,7 +600,7 @@ fuente.onmessage = function (evento) {
   ultimo = m;
   horaUltimoMensaje = Date.now();
   actualizarCabecera();
-  actualizarPrueba(m.prueba):
+  actualizarPrueba(m.prueba);
   hayQueDibujar = true;
 };
 
