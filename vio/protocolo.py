@@ -97,3 +97,11 @@ def leer_imagen(datos):
         raise ValueError("no es un paquete de imagen (versión 3)")
     _, t_ns = struct.unpack(FORMATO_CABECERA_IMAGEN, datos[:TAMANO_CABECERA_IMAGEN])
     return t_ns, datos[TAMANO_CABECERA_IMAGEN:]
+
+
+
+
+# =====================================================================
+# Etapa 16 — Órdenes del visor a pi_vio (puerto de control)
+# =====================================================================
+ORDEN_REINICIAR = b"reiniciar"     # empezar una prueba nueva: el VIO vuelve a inicializarse
