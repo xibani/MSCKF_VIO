@@ -8,6 +8,7 @@ Uso, desde ~/svo-pi:
     python -m apps.pi_vio --grabacion datos/sim_vio --sin-red
     python -m apps.pi_vio --sin-vista                     # sin enviar las imágenes al visor
     python -m apps.pi_vio --grabacion datos/sim_vio --sin-calibracion-acc   # datos sintéticos
+    python -m apps.pi_vio --ip-mapa 192.168.1.37          # además, el mapa al PC (apps/pc_mapa)
 
 El acelerómetro se corrige con config/imu_calibracion.yaml (etapa 7.2) si existe.
 El botón "Nueva prueba" del visor web envía "reiniciar" al puerto de control (UDP 5007,
@@ -15,8 +16,10 @@ etapa 16): el VIO vuelve a inicializarse y la trayectoria sigue en vio_trayector
 En vivo: QUIETO hasta que aparezca "VIO EN MARCHA". Ctrl+C para terminar.
 Al encender la Pi lo lanza systemd (sistema/instalar_servicios.sh); "systemctl stop" envía
   SIGTERM, que aquí se trata igual que Ctrl+C.
-demás de la pose (UDP 5005), cada pocas imágenes envía la imagen con sus pistas dibujadas
+Además de la pose (UDP 5005), cada pocas imágenes envía la imagen con sus pistas dibujadas
 (UDP 5006, etapa 14) para apps/visor_web.
+Etapa 18: los puntos del mapa y los keyframes de mapeo se guardan en mapa.paquetes y, si hay
+IP del PC (--ip-mapa, o mapeo.ip_pc en config/vio.yaml), se envían a apps/pc_mapa (UDP 5007).
 La trayectoria estimada se guarda en vio_trayectoria.csv (dentro de la grabación, o en
 datos/vio_AAAAMMDD_HHMMSS/ en vivo).
 """
@@ -163,6 +166,31 @@ def enviar_imagen(emisor, destino, t_ns, gris, pipeline, r, cfg_vista):
         enviar(emisor, protocolo.empaquetar_imagen(t_ns, jpeg), destino)
 
 
+def paquetes_mapa(r, K, dist, cfg_mapeo):
+    """Etapa 17: los paquetes de mapa de una imagen procesada.
+
+    - Puntos aceptados por el MSCKF en esta imagen (versión 5), si hay.
+    - El keyframe de mapeo (versión 4), si el clon que acaba de salir de la ventana lo es.
+      La imagen va en JPEG con la calidad del YAML, bajándola si no cabe en el paquete.
+    Devuelve: lista de bytes.
+    """
+    paquetes = []
+    ids, p_w = r["puntos_mapa"]
+    if len(ids) > 0:
+        paquetes += protocolo.empaquetar_puntos(r["t_ns"], ids, p_w)
+    kf = r["keyframe"]
+    if kf is not None:
+        jpeg = vista_vio.codificar_jpeg(
+            kf.gris,
+            cfg_mapeo["calidad_jpeg"],
+            protocolo.espacio_jpeg_keyframe(len(kf.ids)),
+        )
+        if jpeg is not None:
+            tamano = (kf.gris.shape[1], kf.gris.shape[0])
+            paquetes.append(protocolo.empaquetar_keyframe(kf, K, dist, tamano, jpeg))
+    return paquetes
+
+
 # =====================================================================
 # Programa principal
 # =====================================================================
@@ -263,6 +291,14 @@ def main():
         help="no corregir el acelerómetro con config/imu_calibracion.yaml",
     )
     parser.add_argument(
+        "--ip-mapa",
+        default=None,
+        help="IP del PC con apps/pc_mapa (por defecto, mapeo.ip_pc de config/vio.yaml)",
+    )
+    parser.add_argument(
+        "--sin-mapa", action="store_true", help="ni guardar ni enviar el mapa"
+    )
+    parser.add_argument(
         "--puerto-control",
         type=int,
         default=cargar_config("vio")["control"]["puerto"],
@@ -322,6 +358,16 @@ def main():
     con_vista = emisor is not None and not args.sin_vista
     salida = open(carpeta / "vio_trayectoria.csv", "w", encoding="utf-8")
     salida.write(CABECERA_POSES)
+    # Etapa 18: el mapa, siempre a disco y, si hay IP, también al PC
+    cfg_mapeo = cfgs["vio"]["mapeo"]
+    archivo_mapa = None if args.sin_mapa else open(carpeta / cfg_mapeo["archivo"], "wb")
+    ip_mapa = args.ip_mapa if args.ip_mapa is not None else cfg_mapeo["ip_pc"]
+    destino_mapa = None
+    if archivo_mapa is not None and emisor is not None and ip_mapa:
+        destino_mapa = (ip_mapa, cfg_mapeo["puerto"])
+        print(
+            f"Mapa al PC: {ip_mapa}:{cfg_mapeo['puerto']} (en el PC: python -m apps.pc_mapa)"
+        )
     control = abrir_control(args.puerto_control) if args.puerto_control else None
     n_prueba = 1
 
@@ -386,6 +432,11 @@ def main():
                     destino,
                 )
             salida.write(linea_pose(r["t_ns"], r["R_w_i"], r["p_w"]))
+            if archivo_mapa is not None:
+                for datos in paquetes_mapa(r, K, dist, cfg_mapeo):
+                    protocolo.escribir_paquete(archivo_mapa, datos)
+                    if destino_mapa is not None:
+                        enviar(emisor, datos, destino_mapa)
             tiempos.append(r["tiempos_ms"])
             if r["t_ns"] - t_aviso_ns >= cfgs["vio"]["ejecucion"]["aviso_cada_s"] * 1e9:
                 t_aviso_ns = r["t_ns"]
@@ -399,9 +450,12 @@ def main():
                     linea += (
                         f" | IMU perdidas {contadores['perdidas'].value}"
                         f" | errores I2C {contadores['errores_i2c'].value}"
+                        f" | keyframes {pipeline.n_keyframes:3d} | {ms_total:5.1f} ms/imagen"
                     )
                 print(linea)
                 salida.flush()  # al disco cada segundo: por si se desenchufa la Pi
+                if archivo_mapa is not None:
+                    archivo_mapa.flush()
     except KeyboardInterrupt:
         print("\nTerminado")
     finally:
@@ -411,12 +465,18 @@ def main():
             emisor.close()
         if control is not None:
             control.close()
+        if archivo_mapa is not None:
+            archivo_mapa.close()
 
     if tiempos:
         print(
             f"{len(tiempos)} imágenes procesadas. Trayectoria: {carpeta / 'vio_trayectoria.csv'}"
         )
         resumen_tiempos(tiempos, cfgs["vio"]["ejecucion"]["presupuesto_ms"])
+        if archivo_mapa is not None:
+            print(
+                f"{pipeline.n_keyframes} keyframes de mapeo. Mapa: {carpeta / cfg_mapeo['archivo']}"
+            )
     else:
         print("El filtro no llegó a arrancar.")
 

@@ -218,3 +218,129 @@ def test_pipeline_entrega_keyframes(tmp_path):
         assert kf.gris.shape == (480, 640) and kf.gris.dtype == np.uint8
         assert len(kf.z) >= CFG_MAPEO["puntos_min"] and (kf.z > 0).all()
         assert kf.xy.shape == (len(kf.ids), 2)
+
+
+# =====================================================================
+# Paso 18.2 — Paquetes de mapa y archivo
+# =====================================================================
+def keyframe_de_prueba(n=40, semilla=0):
+    """Un KeyframeMapeo inventado. La imagen es ruido suavizado: se comprime como una imagen
+    real (el ruido blanco no cabe en un paquete ni con la calidad JPEG más baja)."""
+    rng = np.random.default_rng(semilla)
+    ruido = rng.integers(0, 256, (480, 640)).astype(np.float32)
+    gris = cv2.normalize(
+        cv2.GaussianBlur(ruido, (0, 0), 3), None, 0, 255, cv2.NORM_MINMAX
+    ).astype(np.uint8)
+    return mapeo.KeyframeMapeo(
+        t_ns=123456789012345,
+        indice=77,
+        R_w_c=so3.exp_so3([0.1, -0.2, 0.3]),
+        p_w_c=np.array([1.5, -0.25, 0.75]),
+        ids=rng.integers(0, 2**31 - 1, n),
+        xy=rng.uniform(-0.5, 0.5, (n, 2)),
+        z=rng.uniform(0.5, 6.0, n),
+        gris=gris,
+    )
+
+
+def test_paquete_keyframe_ida_y_vuelta():
+    kf = keyframe_de_prueba()
+    dist = np.array([-0.3, 0.1, 0.001, -0.002, 0.0])
+    jpeg = cv2.imencode(".jpg", kf.gris, [cv2.IMWRITE_JPEG_QUALITY, 20])[1].tobytes()
+    datos = protocolo.empaquetar_keyframe(kf, K, dist, (640, 480), jpeg)
+    assert datos[0] == 4 and len(
+        datos
+    ) == protocolo.TAMANO_CABECERA_KEYFRAME + 16 * 40 + len(jpeg)
+    leido = protocolo.leer_keyframe(datos)
+    assert (
+        leido["t_ns"] == kf.t_ns
+        and leido["indice"] == 77
+        and leido["tamano"] == (640, 480)
+    )
+    assert leido["R_w_c"] == pytest.approx(kf.R_w_c, abs=1e-15) and leido[
+        "p_w_c"
+    ] == pytest.approx(kf.p_w_c)
+    assert leido["K"] == pytest.approx(K) and leido["dist"] == pytest.approx(dist)
+    assert list(leido["ids"]) == list(kf.ids)
+    # Puntos en float32: 7 cifras significativas
+    assert leido["xy"] == pytest.approx(kf.xy, rel=1e-6, abs=1e-7) and leido[
+        "z"
+    ] == pytest.approx(kf.z, rel=1e-6)
+    assert leido["jpeg"] == jpeg
+
+
+def test_paquete_keyframe_que_no_cabe():
+    kf = keyframe_de_prueba(n=150)
+    espacio = protocolo.espacio_jpeg_keyframe(150)
+    assert (
+        espacio
+        == protocolo.MAX_BYTES_UDP - protocolo.TAMANO_CABECERA_KEYFRAME - 150 * 16
+    )
+    assert (
+        len(protocolo.empaquetar_keyframe(kf, K, DIST, (640, 480), b"x" * espacio))
+        == protocolo.MAX_BYTES_UDP
+    )
+    with pytest.raises(ValueError):
+        protocolo.empaquetar_keyframe(kf, K, DIST, (640, 480), b"x" * (espacio + 1))
+    with pytest.raises(ValueError):  # sin JPEG: incompleto
+        protocolo.leer_keyframe(
+            protocolo.empaquetar_keyframe(kf, K, DIST, (640, 480), b"")[:-1]
+        )
+    with pytest.raises(ValueError):  # un paquete de pose no es un keyframe
+        protocolo.leer_keyframe(protocolo.empaquetar_pose(0, np.eye(3), np.zeros(3)))
+
+
+def test_paquetes_de_puntos():
+    rng = np.random.default_rng(1)
+    n = 2 * protocolo.MAX_PUNTOS_POR_PAQUETE + 10
+    ids, p_w = np.arange(n), rng.uniform(-5, 5, (n, 3))
+    paquetes = protocolo.empaquetar_puntos(42, ids, p_w)
+    assert len(paquetes) == 3 and all(
+        len(d) <= protocolo.MAX_BYTES_UDP for d in paquetes
+    )
+    leidos = [protocolo.leer_puntos(d) for d in paquetes]
+    assert all(t == 42 for t, _, _ in leidos)
+    assert list(np.concatenate([i for _, i, _ in leidos])) == list(ids)
+    assert np.vstack([p for _, _, p in leidos]) == pytest.approx(
+        p_w, rel=1e-6, abs=1e-6
+    )
+    assert protocolo.empaquetar_puntos(0, np.zeros(0, int), np.zeros((0, 3))) == []
+    with pytest.raises(ValueError):
+        protocolo.leer_puntos(paquetes[2][:-3])  # cortado
+    with pytest.raises(ValueError):
+        protocolo.leer_puntos(protocolo.empaquetar_imagen(0, b"jpeg"))
+
+
+def test_archivo_de_paquetes(tmp_path):
+    ruta = tmp_path / "mapa.paquetes"
+    paquetes = [b"uno", b"", bytes(range(256)) * 300, b"cuatro"]
+    with open(ruta, "wb") as f:
+        for datos in paquetes:
+            protocolo.escribir_paquete(f, datos)
+    assert list(protocolo.leer_archivo_paquetes(ruta)) == paquetes
+    # La Pi se apaga mientras escribe el último: se leen los completos, sin error
+    contenido = ruta.read_bytes()
+    for corte in (len(contenido) - 2, len(contenido) - len(b"cuatro") - 2):
+        ruta.write_bytes(contenido[:corte])
+        assert list(protocolo.leer_archivo_paquetes(ruta)) == paquetes[:3]
+
+
+def test_paquetes_mapa_de_pi_vio():
+    from apps.pi_vio import paquetes_mapa
+
+    kf = keyframe_de_prueba(n=30)
+    r = {"t_ns": 5, "puntos_mapa": (np.array([3, 4]), np.ones((2, 3))), "keyframe": kf}
+    paquetes = paquetes_mapa(r, K, DIST, CFG_MAPEO)
+    assert [d[0] for d in paquetes] == [5, 4]
+    leido = protocolo.leer_keyframe(paquetes[1])
+    imagen = cv2.imdecode(np.frombuffer(leido["jpeg"], np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert imagen.shape == (480, 640)
+    # Si ni con la calidad más baja cabe (ruido blanco), ese keyframe no se envía
+    kf.gris = np.random.default_rng(0).integers(0, 256, (480, 640), dtype=np.uint8)
+    assert [d[0] for d in paquetes_mapa(r, K, DIST, CFG_MAPEO)] == [5]
+    sin_nada = {
+        "t_ns": 5,
+        "puntos_mapa": (np.zeros(0, int), np.zeros((0, 3))),
+        "keyframe": None,
+    }
+    assert paquetes_mapa(sin_nada, K, DIST, CFG_MAPEO) == []
