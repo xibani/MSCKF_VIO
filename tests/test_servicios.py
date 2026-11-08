@@ -9,6 +9,7 @@ Solo en Linux (en la Pi): en Windows no hay SIGTERM ni systemd.
 
 import copy
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -139,6 +140,24 @@ def test_servicio_de_red_generado():
         in r.stdout
     )
     assert "Type=oneshot" in r.stdout and "After=NetworkManager.service" in r.stdout
+
+
+def test_regla_sudo_solo_para_nmcli():
+    # Etapa 18: "permitir" deja al usuario ejecutar nmcli como root sin contraseña, y nada más
+    r = subprocess.run(
+        ["bash", str(RAIZ_PROYECTO / "sistema" / "red.sh"), "ver"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    regla = r.stdout.split("(bash sistema/red.sh permitir) ===\n")[1].strip()
+    import pwd  # solo existe en Linux (aquí ya lo es)
+
+    usuario = pwd.getpwuid(os.getuid()).pw_name  # el mismo que da "id -un"
+    assert re.fullmatch(
+        re.escape(usuario) + r" ALL=\(root\) NOPASSWD: /\S*/nmcli", regla
+    ), regla
 
 
 def arranque_con_nmcli_falso(tmp_path, estado_wlan0, espera_s):
