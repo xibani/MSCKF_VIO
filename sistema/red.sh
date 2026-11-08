@@ -13,6 +13,8 @@
 #   bash sistema/red.sh estado      # en qué modo está ahora
 #   bash sistema/red.sh ver         # el servicio que instalaría
 #   bash sistema/red.sh quitar      # deja de decidir al encender (se queda siempre en cliente)
+#   bash sistema/red.sh permitir    # etapa 18: el visor web puede cambiar de red (sudo nmcli sin contraseña)
+#                                   # (para deshacerlo: sudo rm /etc/sudoers.d/vio-red)
 
 set -euo pipefail          # parar en el primer error (y con variables sin definir)
 
@@ -23,11 +25,18 @@ IP_PUNTO="10.42.0.1/24"    # la Pi dentro de su red: en la tablet, http://10.42.
 CANAL=6                    # 2,4 GHz, canal 6: lo ve cualquier tablet
 ESPERA_CLIENTE_S=40        # al encender: segundos para encontrar una Wi-Fi conocida
 SERVICIO="vio-red"
+SUDOERS="/etc/sudoers.d/vio-red"   # etapa 18: permiso del visor web para cambiar de red
 
 generar() {
     # Rellena la plantilla sistema/vio-red.service con las rutas y valores de este script
     sed -e 's/\r$//' -e "s|@PROYECTO@|$PROYECTO|g" -e "s|@ESPERA@|$ESPERA_CLIENTE_S|g" \
         -e "s|@CONEXION@|$CONEXION|g" "$PROYECTO/sistema/$SERVICIO.service"
+}
+
+regla_sudo() {
+    # Este usuario (el del servicio vio-visor-web) puede ejecutar nmcli como root sin contraseña.
+    # Solo nmcli: no da permiso para nada más
+    echo "$(id -un) ALL=(root) NOPASSWD: $(command -v nmcli || echo /usr/bin/nmcli)"
 }
 
 existe_punto() {
@@ -106,6 +115,20 @@ case "${1:-}" in
     ver)
         echo "=== /etc/systemd/system/$SERVICIO.service ==="
         generar
+        echo "=== $SUDOERS (bash sistema/red.sh permitir) ==="
+        regla_sudo
+        ;;
+
+    permitir)
+        TEMPORAL="$(mktemp)"
+        regla_sudo > "$TEMPORAL"
+        # visudo -c comprueba la regla ANTES de instalarla: una regla mal escrita en
+        # /etc/sudoers.d/ puede dejar sudo sin funcionar
+        sudo visudo -cf "$TEMPORAL" >/dev/null
+        sudo install -m 0440 -o root -g root "$TEMPORAL" "$SUDOERS"
+        rm -f "$TEMPORAL"
+        echo "Hecho: $(regla_sudo)"
+        echo "Ya se puede cambiar de red desde el panel 'Red Wi-Fi' del visor web"
         ;;
 
     quitar)
@@ -116,7 +139,7 @@ case "${1:-}" in
         ;;
 
     *)
-        echo "Uso: bash sistema/red.sh {crear|instalar|punto|cliente|estado|ver|quitar}"
+        echo "Uso: bash sistema/red.sh {crear|instalar|punto|cliente|estado|ver|quitar|permitir}"
         exit 1
         ;;
 esac
