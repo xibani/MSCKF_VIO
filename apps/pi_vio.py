@@ -376,6 +376,7 @@ def main():
     t_aviso_ns = None
     intentos_vistos = 0
     n_imagenes = 0
+    suma_msckf = {}  # recuentos del MSCKF desde el último aviso (para la línea de cada segundo)
     try:
         for evento in fuente:
             if evento[0] == "imu":
@@ -405,7 +406,7 @@ def main():
                 )
                 salida.write(CABECERA_POSES)
                 pipeline = pipeline_nuevo()
-                t_aviso_ns, intentos_vistos = None, 0
+                t_aviso_ns, intentos_vistos, suma_msckf = None, 0, {}
                 print(
                     f"Reiniciado desde el visor (prueba {n_prueba}): QUIETO hasta VIO EN MARCHA..."
                 )
@@ -438,14 +439,22 @@ def main():
                     if destino_mapa is not None:
                         enviar(emisor, datos, destino_mapa)
             tiempos.append(r["tiempos_ms"])
+            # Recuentos del MSCKF sumados desde el último aviso: qué pasa con las pistas
+            for clave in ("usadas", "cortas", "sin_triangular", "chi2", "quieto"):
+                suma_msckf[clave] = suma_msckf.get(clave, 0) + int(r["msckf"][clave])
+            suma_msckf["imagenes"] = suma_msckf.get("imagenes", 0) + 1
             if r["t_ns"] - t_aviso_ns >= cfgs["vio"]["ejecucion"]["aviso_cada_s"] * 1e9:
                 t_aviso_ns = r["t_ns"]
                 p, ms_total = r["p_w"], np.mean([t["total"] for t in tiempos[-20:]])
+                s = suma_msckf
                 linea = (
                     f"  p = ({p[0]:+6.2f}, {p[1]:+6.2f}, {p[2]:+6.2f}) m | puntos "
-                    f"{r['frontend']['activos']:3d} | pistas usadas {r['msckf']['usadas']:2d}"
+                    f"{r['frontend']['activos']:3d} | pistas: usadas {s['usadas']:3d}"
+                    f" cortas {s['cortas']:3d} sin triangular {s['sin_triangular']:3d}"
+                    f" chi2 {s['chi2']:3d} | quieto {s['quieto']}/{s['imagenes']}"
                     f" | keyframes {pipeline.n_keyframes:3d} | {ms_total:5.1f} ms/imagen"
                 )
+                suma_msckf = {}
                 if contadores:
                     linea += (
                         f" | IMU perdidas {contadores['perdidas'].value}"
