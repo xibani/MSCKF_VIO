@@ -444,13 +444,12 @@ def main():
                 linea = (
                     f"  p = ({p[0]:+6.2f}, {p[1]:+6.2f}, {p[2]:+6.2f}) m | puntos "
                     f"{r['frontend']['activos']:3d} | pistas usadas {r['msckf']['usadas']:2d}"
-                    f" | {ms_total:5.1f} ms/imagen"
+                    f" | keyframes {pipeline.n_keyframes:3d} | {ms_total:5.1f} ms/imagen"
                 )
                 if contadores:
                     linea += (
                         f" | IMU perdidas {contadores['perdidas'].value}"
                         f" | errores I2C {contadores['errores_i2c'].value}"
-                        f" | keyframes {pipeline.n_keyframes:3d} | {ms_total:5.1f} ms/imagen"
                     )
                 print(linea)
                 salida.flush()  # al disco cada segundo: por si se desenchufa la Pi
