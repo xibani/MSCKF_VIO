@@ -6,6 +6,7 @@ Idea:
     pi_vio (imagen + pistas) --UDP 127.0.0.1:5006-->  visor_web
     visor_web  --HTTP + Server-Sent Events (puerto 8000)-->  navegador de la tablet
     visor_web  --HTTP, vídeo MJPEG (/video)-->  navegador de la tablet
+    navegador  --HTTP /red, /red/punto, /red/cliente-->  visor_web --nmcli-->  Wi-Fi (etapa 18)
 
 La Pi ya no dibuja nada: este proceso solo recibe los paquetes UDP, los decodifica
 y reenvía la pose como texto JSON unas 15 veces por segundo. El dibujo lo hace el
@@ -35,25 +36,25 @@ import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
+from apps import red_wifi
 
 # ---------------------------------------------------------------------------
 # Formato de los paquetes (copia literal de vio/protocolo.py, sin cambios)
 # ---------------------------------------------------------------------------
-FORMATO_V1 = "<Bq9d"      # versión, t_ns, R_w_i (9 float64, por filas)
-FORMATO_V2 = "<Bq9d3d"    # lo mismo + p_w (3 float64)
-TAM_V1 = struct.calcsize(FORMATO_V1)   # 81 bytes
-TAM_V2 = struct.calcsize(FORMATO_V2)   # 105 bytes
+FORMATO_V1 = "<Bq9d"  # versión, t_ns, R_w_i (9 float64, por filas)
+FORMATO_V2 = "<Bq9d3d"  # lo mismo + p_w (3 float64)
+TAM_V1 = struct.calcsize(FORMATO_V1)  # 81 bytes
+TAM_V2 = struct.calcsize(FORMATO_V2)  # 105 bytes
 
 # Máximo de puntos de trayectoria que se mandan al navegador en cada mensaje.
 # Si la tablet se conecta tarde, recibe la trayectoria antigua en trozos.
 MAX_PUNTOS_POR_MENSAJE = 2000
 
 # Imágenes (etapa 14): copia literal de vio/protocolo.py
-FORMATO_CABECERA_IMAGEN = "<Bq"            # versión (3) + t_ns, y detrás los bytes del JPEG
-TAM_CABECERA_IMAGEN = struct.calcsize(FORMATO_CABECERA_IMAGEN)   # 9 bytes
+FORMATO_CABECERA_IMAGEN = "<Bq"  # versión (3) + t_ns, y detrás los bytes del JPEG
+TAM_CABECERA_IMAGEN = struct.calcsize(FORMATO_CABECERA_IMAGEN)  # 9 bytes
 VERSION_IMAGEN = 3
-PERIODO_VIDEO_S = 0.03                     # cada cuánto mira el vídeo si hay imagen nueva
+PERIODO_VIDEO_S = 0.03  # cada cuánto mira el vídeo si hay imagen nueva
 
 # Panel de orientación: dónde cae en la pantalla cada eje del mundo, como [derecha, arriba].
 # Vista "desde detrás de la placa": el observador está detrás (-X), un poco a su derecha (-Y)
@@ -65,13 +66,17 @@ EJES_PANTALLA = {"x": [0.40, 0.30], "y": [-1.0, 0.0], "z": [0.0, 1.0]}
 
 # Etapa 16 — Prueba de trayectoria. Copia literal de config/vio.yaml (prueba, control) y de
 # vio/protocolo.py: este programa solo usa la biblioteca estándar y no lee YAML
-PUERTO_CONTROL = 5007              # UDP de las órdenes a pi_vio (en la propia Pi)
+PUERTO_CONTROL = 5007  # UDP de las órdenes a pi_vio (en la propia Pi)
 ORDEN_REINICIAR = b"reiniciar"
-RECORRIDO_PASO_MIN_M = 0.01        # el recorrido se suma a pasos de al menos 1 cm (fuera el temblor)
-RECORRIDO_MIN_M = 0.5              # con menos recorrido, el error de cierre en % no significa nada
-CIERRE_BUENO_PCT = 2.0             # colores del error de cierre (orientativos)
+RECORRIDO_PASO_MIN_M = (
+    0.01  # el recorrido se suma a pasos de al menos 1 cm (fuera el temblor)
+)
+RECORRIDO_MIN_M = 0.5  # con menos recorrido, el error de cierre en % no significa nada
+CIERRE_BUENO_PCT = 2.0  # colores del error de cierre (orientativos)
 CIERRE_REGULAR_PCT = 5.0
-IGNORAR_TRAS_REINICIO_S = 0.5      # poses de la prueba anterior que aún estén en camino: fuera
+IGNORAR_TRAS_REINICIO_S = (
+    0.5  # poses de la prueba anterior que aún estén en camino: fuera
+)
 
 
 def decodificar_paquete(datos):
@@ -126,23 +131,25 @@ class EstadoCompartido:
         self.cerrojo = threading.Lock()
         self.version = None
         self.t_ns = None
-        self.R = None              # lista 3x3 o None
-        self.p = None              # [x, y, z] o None
-        self.hora_ultimo = None    # time.monotonic() del último paquete válido
-        self.trayectoria = []      # lista de [x, y, z]
-        self.id_sesion = 0         # cambia cuando se reinicia la VIO
+        self.R = None  # lista 3x3 o None
+        self.p = None  # [x, y, z] o None
+        self.hora_ultimo = None  # time.monotonic() del último paquete válido
+        self.trayectoria = []  # lista de [x, y, z]
+        self.id_sesion = 0  # cambia cuando se reinicia la VIO
         self.recibidos = 0
         self.invalidos = 0
         self.no_finitos = 0
         # Etapa 14: la última imagen con sus pistas
-        self.jpeg = None           # bytes del último JPEG, o None
-        self.id_jpeg = 0           # aumenta con cada imagen nueva
-        self.imagenes = 0          # imágenes recibidas
+        self.jpeg = None  # bytes del último JPEG, o None
+        self.id_jpeg = 0  # aumenta con cada imagen nueva
+        self.imagenes = 0  # imágenes recibidas
         # Etapa 16: la prueba de trayectoria en curso
-        self.recorrido_m = 0.0     # longitud del camino (a pasos de RECORRIDO_PASO_MIN_M)
-        self.ancla = None          # último punto contado en el recorrido
+        self.recorrido_m = 0.0  # longitud del camino (a pasos de RECORRIDO_PASO_MIN_M)
+        self.ancla = None  # último punto contado en el recorrido
         self.alejamiento_max_m = 0.0
-        self.ignorar_hasta = 0.0   # time.monotonic() hasta el que se tiran las poses (tras reiniciar)
+        self.ignorar_hasta = (
+            0.0  # time.monotonic() hasta el que se tiran las poses (tras reiniciar)
+        )
         self.reinicios = 0
 
 
@@ -165,7 +172,9 @@ def anadir_punto(estado, p):
     if d >= RECORRIDO_PASO_MIN_M:
         estado.recorrido_m += d
         estado.ancla = p
-    estado.alejamiento_max_m = max(estado.alejamiento_max_m, distancia(p, estado.trayectoria[0]))
+    estado.alejamiento_max_m = max(
+        estado.alejamiento_max_m, distancia(p, estado.trayectoria[0])
+    )
 
 
 def vaciar_trayectoria(estado):
@@ -182,7 +191,11 @@ def metricas_prueba(estado):
     if len(estado.trayectoria) < 2:
         return None
     cierre = distancia(estado.trayectoria[-1], estado.trayectoria[0])
-    pct = 100.0 * cierre / estado.recorrido_m if estado.recorrido_m >= RECORRIDO_MIN_M else None
+    pct = (
+        100.0 * cierre / estado.recorrido_m
+        if estado.recorrido_m >= RECORRIDO_MIN_M
+        else None
+    )
     if pct is None:
         nivel = None
     elif pct <= CIERRE_BUENO_PCT:
@@ -191,10 +204,14 @@ def metricas_prueba(estado):
         nivel = "regular"
     else:
         nivel = "malo"
-    return {"recorrido_m": estado.recorrido_m, "cierre_m": cierre, "cierre_pct": pct,
-            "nivel": nivel, "alejamiento_max_m": estado.alejamiento_max_m,
-            "reinicios": estado.reinicios}
-
+    return {
+        "recorrido_m": estado.recorrido_m,
+        "cierre_m": cierre,
+        "cierre_pct": pct,
+        "nivel": nivel,
+        "alejamiento_max_m": estado.alejamiento_max_m,
+        "reinicios": estado.reinicios,
+    }
 
 
 def bucle_udp(sock, estado, parar):
@@ -248,7 +265,7 @@ def bucle_imagenes(sock, estado, parar):
     """Hilo que recibe las imágenes (etapa 14) y guarda solo la última."""
     while not parar.is_set():
         try:
-            datos, _origen = sock.recvfrom(65536)          # un JPEG cabe en un paquete
+            datos, _origen = sock.recvfrom(65536)  # un JPEG cabe en un paquete
         except socket.timeout:
             continue
         except OSError:
@@ -264,6 +281,16 @@ def bucle_imagenes(sock, estado, parar):
 
 
 # ---------------------------------------------------------------------------
+# Etapa 18: cambio de red en curso (uno a la vez, aunque haya dos tablets)
+# ---------------------------------------------------------------------------
+class CambioRed:
+    def __init__(self):
+        self.cerrojo = threading.Lock()
+        self.en_curso = None  # texto del cambio que se está haciendo, o None
+        self.ultimo = None  # {"descripcion", "ok", "hora"} del último cambio terminado
+
+
+# ---------------------------------------------------------------------------
 # Servidor HTTP: página + flujo de eventos + vídeo
 # ---------------------------------------------------------------------------
 class ManejadorHTTP(BaseHTTPRequestHandler):
@@ -271,6 +298,9 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
     estado = None
     periodo_envio = 1.0 / 15.0
     puerto_control = PUERTO_CONTROL
+    # Etapa 18: el módulo que habla con NetworkManager (los tests lo cambian por uno falso)
+    red = red_wifi
+    cambio_red = CambioRed()
 
     def log_message(self, formato, *args):
         # Silenciar el registro de cada petición para no gastar CPU en la terminal
@@ -285,14 +315,165 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
             self.enviar_video()
         elif self.path.startswith("/foto"):
             self.enviar_foto()
+        elif self.path == "/red":
+            self.enviar_estado_red()
         else:
             self.send_error(404)
 
     def do_POST(self):
         if self.path == "/reiniciar":
             self.reiniciar()
+        elif self.path == "/red/punto":
+            self.pedir_punto()
+        elif self.path == "/red/cliente":
+            self.pedir_cliente()
         else:
             self.send_error(404)
+
+        # ----- Etapa 18: red Wi-Fi -----
+
+    def responder_json(self, codigo, datos):
+        cuerpo = json.dumps(datos, ensure_ascii=False).encode("utf-8")
+        self.send_response(codigo)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(cuerpo)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(cuerpo)
+
+    def enviar_estado_red(self):
+        """GET /red: modo actual, redes guardadas y si se puede cambiar desde aquí."""
+        datos = self.red.estado()
+        datos["punto_creado"] = self.red.existe_punto()
+        datos["puede_cambiar"] = self.red.puede_cambiar()
+        with self.cambio_red.cerrojo:
+            datos["cambiando"] = self.cambio_red.en_curso
+            datos["ultimo_cambio"] = self.cambio_red.ultimo
+        self.responder_json(200, datos)
+
+    def empezar_cambio(self, descripcion, funcion, *argumentos):
+        """Reserva el cambio (uno a la vez). Devuelve False si ya hay otro en curso."""
+        with self.cambio_red.cerrojo:
+            if self.cambio_red.en_curso is not None:
+                return False
+            self.cambio_red.en_curso = descripcion
+        cambio = self.cambio_red
+
+        def trabajo():
+            # En otro hilo: la respuesta HTTP ya ha salido (la función espera RETRASO_CAMBIO_S
+            # antes de tocar la red, para que llegue a la tablet antes del corte)
+            try:
+                ok = bool(funcion(*argumentos))
+            except Exception:
+                ok = False
+            with cambio.cerrojo:
+                cambio.en_curso = None
+                cambio.ultimo = {
+                    "descripcion": descripcion,
+                    "ok": ok,
+                    "hora": time.strftime("%H:%M:%S"),
+                }
+            print(
+                "Cambio de red (%s): %s"
+                % (descripcion, "hecho" if ok else "FALLÓ, vuelta atrás")
+            )
+
+        threading.Thread(target=trabajo, daemon=True).start()
+        return True
+
+    def comprobar_que_se_puede(self):
+        """Comprobaciones comunes. Devuelve None si se puede cambiar, o (código, mensaje)."""
+        if not self.red.puede_cambiar():
+            return (
+                403,
+                "El visor no puede cambiar de red sin contraseña. En la Pi: bash sistema/red.sh permitir",
+            )
+        if not self.red.existe_punto():
+            return (
+                409,
+                "Falta crear el punto de acceso. En la Pi: bash sistema/red.sh crear",
+            )
+        return None
+
+    def pedir_punto(self):
+        """POST /red/punto: deja la red actual (sin olvidarla) y emite VIO-Pi."""
+        problema = self.comprobar_que_se_puede()
+        if problema is not None:
+            self.responder_json(problema[0], {"ok": False, "mensaje": problema[1]})
+            return
+        if not self.empezar_cambio(
+            "punto de acceso " + self.red.SSID_PUNTO, self.red.cambiar_a_punto
+        ):
+            self.responder_json(
+                409, {"ok": False, "mensaje": "Ya hay un cambio de red en curso"}
+            )
+            return
+        url = "http://%s:%d" % (self.red.IP_PUNTO, self.red.PUERTO_WEB)
+        self.responder_json(
+            200,
+            {
+                "ok": True,
+                "mensaje": "La Pi deja esta red y emite %s. Conecta la tablet a la red %s y abre:"
+                % (self.red.SSID_PUNTO, self.red.SSID_PUNTO),
+                "enlaces": [url],
+            },
+        )
+
+    def pedir_cliente(self):
+        """POST /red/cliente con {"conexion": nombre}: se conecta a esa red guardada."""
+        try:
+            largo = int(self.headers.get("Content-Length", "0"))
+            conexion = json.loads(self.rfile.read(largo).decode("utf-8"))["conexion"]
+        except (ValueError, KeyError, TypeError):
+            self.responder_json(
+                400,
+                {"ok": False, "mensaje": 'Falta {"conexion": nombre} en la petición'},
+            )
+            return
+        problema = self.comprobar_que_se_puede()
+        if problema is not None:
+            self.responder_json(problema[0], {"ok": False, "mensaje": problema[1]})
+            return
+        estado_red = self.red.estado()
+        redes = {r["conexion"]: r for r in estado_red["redes"]}
+        if conexion not in redes:
+            # Solo redes guardadas: nada de pasar a nmcli un nombre cualquiera
+            self.responder_json(
+                400,
+                {
+                    "ok": False,
+                    "mensaje": "La red %r no está guardada en la Pi" % conexion,
+                },
+            )
+            return
+        red = redes[conexion]
+        if not self.empezar_cambio(
+            "red " + red["ssid"], self.red.cambiar_a_red, conexion
+        ):
+            self.responder_json(
+                409, {"ok": False, "mensaje": "Ya hay un cambio de red en curso"}
+            )
+            return
+        # La IP nueva la decide el router de esa red: se da la última conocida y el nombre .local
+        enlaces = []
+        if red.get("ultima_ip"):
+            enlaces.append("http://%s:%d" % (red["ultima_ip"], self.red.PUERTO_WEB))
+        enlaces.append(estado_red["url_mdns"])
+        self.responder_json(
+            200,
+            {
+                "ok": True,
+                "mensaje": "La Pi se conecta a %s (si no lo consigue en %d s, vuelve a emitir %s). "
+                "Conecta la tablet a %s y prueba:"
+                % (
+                    red["ssid"],
+                    self.red.ESPERA_CONEXION_S,
+                    self.red.SSID_PUNTO,
+                    red["ssid"],
+                ),
+                "enlaces": enlaces,
+            },
+        )
 
     def reiniciar(self):
         """Botón "Nueva prueba": orden a pi_vio por UDP y trayectoria a cero.
@@ -335,7 +516,7 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
         self.end_headers()
 
         estado = self.estado
-        indice_enviado = 0        # cuántos puntos de la trayectoria tiene ya este navegador
+        indice_enviado = 0  # cuántos puntos de la trayectoria tiene ya este navegador
         sesion_enviada = None
 
         try:
@@ -347,7 +528,9 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
                         indice_enviado = 0
 
                     inicio = indice_enviado
-                    nuevos = estado.trayectoria[inicio:inicio + MAX_PUNTOS_POR_MENSAJE]
+                    nuevos = estado.trayectoria[
+                        inicio : inicio + MAX_PUNTOS_POR_MENSAJE
+                    ]
                     indice_enviado = inicio + len(nuevos)
 
                     if estado.hora_ultimo is None:
@@ -357,7 +540,7 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
 
                     mensaje = {
                         "sesion": estado.id_sesion,
-                        "inicio": inicio,          # posición de 'nuevos' en la trayectoria
+                        "inicio": inicio,  # posición de 'nuevos' en la trayectoria
                         "nuevos": nuevos,
                         "version": estado.version,
                         "t_s": None if estado.t_ns is None else estado.t_ns * 1e-9,
@@ -379,12 +562,13 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
             # La tablet ha cerrado la pestaña o se ha perdido la Wi-Fi
             return
 
-
     def enviar_video(self):
         """Vídeo MJPEG: una respuesta que no termina, con un JPEG tras otro separados por
         una frontera. Los navegadores lo muestran directamente en un <img>."""
         self.send_response(200)
-        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=fotograma")
+        self.send_header(
+            "Content-Type", "multipart/x-mixed-replace; boundary=fotograma"
+        )
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
 
@@ -395,9 +579,14 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
             while True:
                 with estado.cerrojo:
                     jpeg, id_jpeg = estado.jpeg, estado.id_jpeg
-                if jpeg is not None and id_jpeg != ultimo_id:      # solo cuando hay imagen nueva
+                if (
+                    jpeg is not None and id_jpeg != ultimo_id
+                ):  # solo cuando hay imagen nueva
                     ultimo_id = id_jpeg
-                    cabecera = "Content-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg)
+                    cabecera = (
+                        "Content-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n"
+                        % len(jpeg)
+                    )
                     self.wfile.write(cabecera.encode("ascii"))
                     self.wfile.write(jpeg)
                     # La frontera va DETRÁS de cada imagen: el navegador muestra una imagen
@@ -438,23 +627,45 @@ def ip_local_probable():
 
 def terminar_con_sigterm():
     """Que SIGTERM ("systemctl stop") cierre el servidor igual que Ctrl+C."""
+
     def manejador(_senal, _marco):
         raise KeyboardInterrupt
+
     signal.signal(signal.SIGTERM, manejador)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Visor web de la VIO (para tablet)")
-    parser.add_argument("--puerto-udp", type=int, default=5005,
-                        help="puerto donde llegan los paquetes de pi_vio (5005)")
-    parser.add_argument("--puerto-imagen", type=int, default=5006,
-                        help="puerto donde llegan las imágenes con pistas de pi_vio (5006)")
-    parser.add_argument("--puerto-web", type=int, default=8000,
-                        help="puerto HTTP para el navegador (8000)")
-    parser.add_argument("--puerto-control", type=int, default=PUERTO_CONTROL,
-                        help="puerto UDP de las órdenes a pi_vio (5007)")
-    parser.add_argument("--hz", type=float, default=15.0,
-                        help="mensajes por segundo hacia el navegador (15)")
+    parser.add_argument(
+        "--puerto-udp",
+        type=int,
+        default=5005,
+        help="puerto donde llegan los paquetes de pi_vio (5005)",
+    )
+    parser.add_argument(
+        "--puerto-imagen",
+        type=int,
+        default=5006,
+        help="puerto donde llegan las imágenes con pistas de pi_vio (5006)",
+    )
+    parser.add_argument(
+        "--puerto-web",
+        type=int,
+        default=8000,
+        help="puerto HTTP para el navegador (8000)",
+    )
+    parser.add_argument(
+        "--puerto-control",
+        type=int,
+        default=PUERTO_CONTROL,
+        help="puerto UDP de las órdenes a pi_vio (5007)",
+    )
+    parser.add_argument(
+        "--hz",
+        type=float,
+        default=15.0,
+        help="mensajes por segundo hacia el navegador (15)",
+    )
     args = parser.parse_args()
     terminar_con_sigterm()
 
@@ -471,7 +682,9 @@ def main():
         return
     sock.settimeout(0.5)
 
-    hilo_udp = threading.Thread(target=bucle_udp, args=(sock, estado, parar), daemon=True)
+    hilo_udp = threading.Thread(
+        target=bucle_udp, args=(sock, estado, parar), daemon=True
+    )
     hilo_udp.start()
 
     # 1b) Segundo socket para las imágenes (etapa 14)
@@ -481,9 +694,13 @@ def main():
     except OSError as e:
         print("ERROR: no puedo escuchar en UDP %d (%s)." % (args.puerto_imagen, e))
         return
-    sock_img.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)   # 1 MB: varias imágenes en espera
+    sock_img.setsockopt(
+        socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20
+    )  # 1 MB: varias imágenes en espera
     sock_img.settimeout(0.5)
-    hilo_img = threading.Thread(target=bucle_imagenes, args=(sock_img, estado, parar), daemon=True)
+    hilo_img = threading.Thread(
+        target=bucle_imagenes, args=(sock_img, estado, parar), daemon=True
+    )
     hilo_img.start()
 
     # 2) Servidor HTTP (un hilo por navegador conectado)
@@ -493,11 +710,17 @@ def main():
     servidor = ThreadingHTTPServer(("0.0.0.0", args.puerto_web), ManejadorHTTP)
 
     ip = ip_local_probable()
-    print("Escuchando UDP en los puertos %d (pose) y %d (imágenes)." % (args.puerto_udp, args.puerto_imagen))
+    print(
+        "Escuchando UDP en los puertos %d (pose) y %d (imágenes)."
+        % (args.puerto_udp, args.puerto_imagen)
+    )
     if ip:
         print("Abre en la tablet:  http://%s:%d" % (ip, args.puerto_web))
     else:
-        print("Abre en la tablet:  http://<IP de la Pi>:%d   (mira 'hostname -I')" % args.puerto_web)
+        print(
+            "Abre en la tablet:  http://<IP de la Pi>:%d   (mira 'hostname -I')"
+            % args.puerto_web
+        )
     print("Ctrl+C para terminar.")
 
     try:
@@ -547,6 +770,15 @@ PAGINA_HTML = r"""<!doctype html>
                   border-radius: 6px; background: #1565c0; color: #fff; }
   #boton_prueba.confirmar { background: #c62828; }
   #lienzo_3d { aspect-ratio: 4 / 3; touch-action: none; }   /* el dedo gira la vista, no la página */
+  /* Etapa 18: red Wi-Fi */
+  #red { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  #red_modo { font-size: 16px; margin-right: auto; }
+  #red button, #red select { font-size: 16px; padding: 8px 12px; border: 0; border-radius: 6px; }
+  #red button { background: #1565c0; color: #fff; }
+  #red button.confirmar { background: #c62828; }
+  #red button:disabled, #red select:disabled { opacity: 0.4; }
+  #red_aviso { margin-top: 8px; font-size: 15px; color: #ffca28; }
+  #red_aviso a { color: #90caf9; font-size: 18px; margin-right: 18px; }
 </style>
 </head>
 <body>
@@ -569,6 +801,16 @@ PAGINA_HTML = r"""<!doctype html>
   <div class="panel"><h2>Planta X–Y [m] (flecha roja: eje x de la IMU)</h2><canvas id="lienzo_xy"></canvas></div>
   <div class="panel"><h2>Alzado X–Z [m]</h2><canvas id="lienzo_xz"></canvas></div>
   <div class="panel"><h2>Orientación vista desde detrás de la placa (x rojo, y verde, z azul)</h2><canvas id="lienzo_ori"></canvas></div>
+  <!-- Etapa 18: red Wi-Fi -->
+  <div class="panel ancho"><h2>Red Wi-Fi de la Pi (al cambiar se corta esta página: abre la dirección que se indique)</h2>
+    <div id="red">
+      <span id="red_modo">—</span>
+      <button id="boton_punto">Emitir red VIO-Pi</button>
+      <select id="red_lista"></select>
+      <button id="boton_cliente">Conectar a esta red</button>
+    </div>
+    <div id="red_aviso"></div>
+  </div>
 </div>
 
 <script>
@@ -1025,6 +1267,117 @@ function dibujarVista3D() {
   ctx.fillStyle = "#ffeb3b";
   ctx.beginPath(); ctx.arc(pa[0], pa[1], 5, 0, 2 * Math.PI); ctx.fill();
 }
+
+// ------------------------------------------------------------------
+// Etapa 18: red Wi-Fi (punto de acceso VIO-Pi <-> red guardada)
+// ------------------------------------------------------------------
+let redesMostradas = "";      // la lista del <select> solo se rehace si cambia (si no, se cierra sola)
+let avisoDeCambio = false;    // tras pedir un cambio, el aviso con la dirección nueva se queda fijo
+
+function textoModoRed(e) {
+  if (e.modo === "punto") return "Punto de acceso: red " + e.ssid + " (" + e.ip + ")";
+  if (e.modo === "cliente") return "Conectada a " + e.ssid + (e.ip ? " (" + e.ip + ")" : "");
+  return "Wi-Fi desconectada";
+}
+
+function ponerAvisoRed(texto, enlaces) {
+  // Con textContent y createElement: un nombre de red raro no puede meter HTML en la página
+  const aviso = document.getElementById("red_aviso");
+  aviso.textContent = texto + " ";
+  for (const url of enlaces || []) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.textContent = url;
+    aviso.appendChild(a);
+  }
+}
+
+function pintarRed(e) {
+  document.getElementById("red_modo").textContent = textoModoRed(e);
+
+  const lista = document.getElementById("red_lista");
+  const nuevas = JSON.stringify(e.redes);
+  if (nuevas !== redesMostradas) {
+    redesMostradas = nuevas;
+    const elegida = lista.value;
+    lista.textContent = "";
+    for (const r of e.redes) {
+      const op = document.createElement("option");
+      op.value = r.conexion;
+      op.textContent = r.ssid + (r.conexion === e.conexion ? " (actual)" : "");
+      lista.appendChild(op);
+    }
+    if (elegida) lista.value = elegida;
+  }
+
+  const bloqueado = !e.puede_cambiar || e.cambiando !== null;
+  document.getElementById("boton_punto").disabled = bloqueado || !e.punto_creado || e.modo === "punto";
+  document.getElementById("boton_cliente").disabled = bloqueado || e.redes.length === 0;
+  lista.disabled = bloqueado || e.redes.length === 0;
+
+  if (avisoDeCambio) return;
+  if (!e.puede_cambiar) {
+    ponerAvisoRed("Para cambiar de red desde aquí, en la Pi: bash sistema/red.sh permitir", []);
+  } else if (!e.punto_creado) {
+    ponerAvisoRed("Falta crear el punto de acceso. En la Pi: bash sistema/red.sh crear", []);
+  } else if (e.cambiando !== null) {
+    ponerAvisoRed("Cambiando a " + e.cambiando + "…", []);
+  } else if (e.ultimo_cambio && !e.ultimo_cambio.ok) {
+    ponerAvisoRed("El cambio a " + e.ultimo_cambio.descripcion + " (" + e.ultimo_cambio.hora +
+                  ") falló: la Pi volvió atrás.", []);
+  } else {
+    ponerAvisoRed("", []);
+  }
+}
+
+function actualizarRed() {
+  // Sin conexión (p. ej. justo tras cambiar de red) no pasa nada: se reintenta a los 5 s
+  fetch("/red")
+    .then(function (r) { return r.json(); })
+    .then(pintarRed)
+    .catch(function () {});
+}
+
+function pedirCambioRed(ruta, cuerpo) {
+  fetch(ruta, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo) })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      avisoDeCambio = res.ok;          // si salió bien, la dirección nueva se queda en pantalla
+      ponerAvisoRed(res.mensaje, res.enlaces);
+      document.getElementById("boton_punto").disabled = true;
+      document.getElementById("boton_cliente").disabled = true;
+    })
+    .catch(function () { ponerAvisoRed("No se pudo pedir el cambio", []); });
+}
+
+// Los dos botones piden un segundo toque, como "Nueva prueba" (cambiar de red corta la página)
+function botonConConfirmacion(id, accion) {
+  const boton = document.getElementById(id);
+  const textoNormal = boton.textContent;
+  let hasta = 0;
+  boton.addEventListener("click", function () {
+    if (Date.now() > hasta) {
+      hasta = Date.now() + 3000;
+      boton.textContent = "¿Seguro? Toca otra vez";
+      boton.className = "confirmar";
+      setTimeout(function () {
+        if (Date.now() > hasta) { boton.textContent = textoNormal; boton.className = ""; }
+      }, 3100);
+      return;
+    }
+    hasta = 0;
+    boton.textContent = textoNormal;
+    boton.className = "";
+    accion();
+  });
+}
+
+botonConConfirmacion("boton_punto", function () { pedirCambioRed("/red/punto", {}); });
+botonConConfirmacion("boton_cliente", function () {
+  pedirCambioRed("/red/cliente", { conexion: document.getElementById("red_lista").value });
+});
+actualizarRed();
+setInterval(actualizarRed, 5000);
 
 // ------------------------------------------------------------------
 // Bucle de dibujo: solo redibuja cuando ha llegado un mensaje nuevo
