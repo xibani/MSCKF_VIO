@@ -446,10 +446,15 @@ def test_mapa_de_principio_a_fin(tmp_path):
     from herramientas.grabar_simulacion import guardar_grabacion_sintetica
     from scipy.spatial import cKDTree
 
+    from vio import modelo_camara as mc
+
     cfg_vio = copy.deepcopy(cargar_config("simulador")["vio"])
     cfg_vio["trayectoria"]["duracion_s"] = 10.0
+    # La grabación, dibujada con la cámara que usará pi_vio (config/camara_intrinsecos.yaml,
+    # con su distorsión): si no, pi_vio interpretaría los píxeles con otra cámara
+    K_cfg, dist_cfg, tamano = mc.cargar_intrinsecos()
     s = guardar_grabacion_sintetica(
-        tmp_path, cfg_vio, K, (640, 480), EXT, np.random.default_rng(3)
+        tmp_path, cfg_vio, K_cfg, tamano, EXT, np.random.default_rng(3), dist=dist_cfg
     )
 
     # 1. pi_vio sobre la grabación (como en la Pi, pero sin red): escribe mapa.paquetes

@@ -207,13 +207,14 @@ def pose_camara(R_w_i, p_w_i, R_c_i, t_c_i):
     return R_c_w, t_c_i - R_c_w @ p_w_i
 
 
-def observar_puntos(R_c_w, t_c_w, puntos_w, K, tamano, profundidad_min, ruido_px, rng):
+def observar_puntos(R_c_w, t_c_w, puntos_w, K, tamano, profundidad_min, ruido_px, rng, dist=None):
     """Qué puntos ve la cámara y dónde, con ruido.
 
     puntos_w: (M, 3). tamano: (ancho, alto) [px].
+    dist: (k1, k2, p1, p2, k3) de la lente, o None para una cámara sin distorsión.
     Un punto se ve si está a más de profundidad_min delante de la cámara y su proyección
     SIN ruido cae dentro de la imagen. Después se añade el ruido en píxeles.
-    Devuelve: (ids (V,), uv (V, 2) [px], xy (V, 2) normalizadas), V = puntos vistos.
+    Devuelve: (ids (V,), uv (V, 2) [px], xy (V, 2) normalizadas sin distorsión), V = puntos vistos.
     """
     ancho, alto = tamano
     # 1. Todos los puntos a ejes de la cámara (de una vez: cada fila es un punto)
@@ -222,13 +223,19 @@ def observar_puntos(R_c_w, t_c_w, puntos_w, K, tamano, profundidad_min, ruido_px
     # 2. Proyección a píxeles (solo los de delante, para no dividir por z <= 0)
     ids = np.flatnonzero(delante)
     xy = p_c[ids, :2] / p_c[ids, 2:3]
+    if dist is not None:
+        from vio import modelo_camara as mc     # aquí dentro: solo hace falta con distorsión (cv2)
+        xy = mc.distorsionar(xy, dist)
     u = K[0, 0] * xy[:, 0] + K[0, 2]
     v = K[1, 1] * xy[:, 1] + K[1, 2]
     dentro = (u >= 0) & (u < ancho) & (v >= 0) & (v < alto)
     ids, u, v = ids[dentro], u[dentro], v[dentro]
-    # 3. Ruido en píxeles y vuelta a coordenadas normalizadas
+    # 3. Ruido en píxeles y vuelta a coordenadas normalizadas (quitando la distorsión, si hay)
     uv = np.column_stack([u, v]) + rng.normal(0.0, ruido_px, (len(ids), 2))
-    xy = np.column_stack([(uv[:, 0] - K[0, 2]) / K[0, 0], (uv[:, 1] - K[1, 2]) / K[1, 1]])
+    if dist is None:
+        xy = np.column_stack([(uv[:, 0] - K[0, 2]) / K[0, 0], (uv[:, 1] - K[1, 2]) / K[1, 1]])
+    else:
+        xy = mc.normalizar(uv, K, dist) if len(ids) else np.zeros((0, 2))
     return ids, uv, xy
 
 
@@ -237,11 +244,12 @@ def observar_puntos(R_c_w, t_c_w, puntos_w, K, tamano, profundidad_min, ruido_px
 # ---------------------------------------------------------------------
 # Paso 11.4 — Secuencia completa y pistas
 # ---------------------------------------------------------------------
-def generar_secuencia(cfg_vio, K, tamano, rng, pose=None):
+def generar_secuencia(cfg_vio, K, tamano, rng, pose=None, dist=None):
     """Una secuencia VIO simulada completa, con verdad.
 
     cfg_vio: sección "vio" de config/simulador.yaml. K, tamano: intrínsecos de la cámara.
     pose: función t [s] -> (R_w_i, p_w) de la trayectoria; por defecto, pose_vio (etapa 13).
+    dist: distorsión de la lente (k1, k2, p1, p2, k3), o None para una cámara sin distorsión.
 
     cfg_vio: sección "vio" de config/simulador.yaml. K, tamano: intrínsecos de la cámara.
     Devuelve: dict con
@@ -277,7 +285,8 @@ def generar_secuencia(cfg_vio, K, tamano, rng, pose=None):
     for j, k in enumerate(indices_imu):
         R_c_w[j], t_c_w[j] = pose_camara(tr["R_w_i"][k], tr["p_w"][k], R_c_i, t_c_i)
         ids, uv, xy = observar_puntos(R_c_w[j], t_c_w[j], puntos, K, tamano,
-                                      cam_cfg["profundidad_min_m"], cam_cfg["ruido_px"], rng)
+                                      cam_cfg["profundidad_min_m"], cam_cfg["ruido_px"], rng,
+                                      dist=dist)
         obs["t_ns"].append(np.full(len(ids), t_ns[k], dtype=np.int64))
         obs["imagen"].append(np.full(len(ids), j))
         obs["id"].append(ids)

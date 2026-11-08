@@ -24,11 +24,14 @@ from vio.config import RAIZ_PROYECTO, cargar_config
 from vio.pipeline import CABECERA_POSES, linea_pose
 
 
-def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng):
+def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng, dist=None):
     """Simula y escribe la grabación en `carpeta`. Devuelve: la secuencia del simulador.
 
     cfg_vio: sección "vio" de config/simulador.yaml. cfg_ext: dict de config/camara_imu.yaml
     (la extrínseca con la que se simula es la misma que usará el filtro).
+    K, dist: la cámara con que se dibujan las imágenes. Para repetirla con apps/pi_vio deben
+    ser las de config/camara_intrinsecos.yaml, que es lo que usará pi_vio para quitar la
+    distorsión (dist=None: cámara sin distorsión).
     """
     carpeta = Path(carpeta)
     cfg = copy.deepcopy(cfg_vio)
@@ -40,7 +43,7 @@ def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng):
     # 1. Simulación, con reposo al principio
     def pose(t):
         return sim.pose_con_reposo(t, cfg["trayectoria"], graba["reposo_s"], graba["rampa_s"])
-    s = sim.generar_secuencia(cfg, K, tamano, rng, pose=pose)
+    s = sim.generar_secuencia(cfg, K, tamano, rng, pose=pose, dist=dist)
 
     # 2. IMU
     euroc.ruta_imu(carpeta).parent.mkdir(parents=True, exist_ok=True)
@@ -78,10 +81,10 @@ def main():
     cfg_vio = cargar_config("simulador")["vio"]
     if args.duracion is not None:
         cfg_vio["trayectoria"]["duracion_s"] = args.duracion
-    K, _, tamano = mc.cargar_intrinsecos()
+    K, dist, tamano = mc.cargar_intrinsecos()
     carpeta = RAIZ_PROYECTO / cargar_config("proyecto")["carpeta_datos"] / args.carpeta
     s = guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cargar_config("camara_imu"),
-                                    np.random.default_rng(cfg_vio["semilla"]))
+                                    np.random.default_rng(cfg_vio["semilla"]), dist=dist)
     print(f"Grabación sintética en {carpeta}: {len(s['imu']['t_ns'])} muestras de IMU,"
           f" {len(s['camaras']['t_ns'])} imágenes, quieta los primeros "
           f"{cfg_vio['grabacion_sintetica']['reposo_s']} s")
