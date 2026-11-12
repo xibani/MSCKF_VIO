@@ -134,3 +134,99 @@ class EmparejadorLightGlue:
         indices = salida["matches"][0].cpu().numpy().astype(int).reshape(-1, 2)
         confianza = salida["scores"][0].cpu().numpy().astype(np.float64).reshape(-1)
         return indices, confianza, 1e3 * (time.perf_counter() - t0)
+
+
+    # =====================================================================
+    # Paso 21.3 — ¿Son correctas las parejas? (con la verdad del simulador)
+    # =====================================================================
+    def posicion_verdadera_en_b(uv_a, profundidad_a, pose_a, pose_b, K, dist):
+        """Dónde está DE VERDAD, en la imagen B, cada punto de la imagen A.
+
+        Solo se puede calcular en el simulador, que conoce la profundidad de cada píxel:
+            píxel de A + su profundidad -> punto 3D en la cámara A -> en el mundo -> en la
+            cámara B -> píxel de B.
+        uv_a: (N, 2) [px]. profundidad_a: (alto, ancho) [m], de escena.renderizar_habitacion.
+        pose_a, pose_b: (R_c_w, t_c_w) de cada cámara. dist: distorsión, o None.
+        Devuelve: (uv_b (N, 2), visible (N,) bool): visible = delante de B y dentro de su imagen.
+        """
+        alto, ancho = profundidad_a.shape
+        R_a, t_a = pose_a
+        R_b, t_b = pose_b
+        # 1. Píxel -> coordenadas normalizadas (x, y) y profundidad z en ese píxel (interpolada)
+        if dist is None:
+            xy = np.column_stack([(uv_a[:, 0] - K[0, 2]) / K[0, 0], (uv_a[:, 1] - K[1, 2]) / K[1, 1]])
+        else:
+            xy = mc.normalizar(uv_a, K, dist)
+        z = escena.muestrear_bilineal(profundidad_a, uv_a[:, 0], uv_a[:, 1])
+        # 2. Cámara A -> mundo -> cámara B
+        p_c_a = z[:, None] * np.column_stack([xy, np.ones(len(xy))])
+        p_w = (p_c_a - t_a) @ R_a                                  # R_aᵀ·(p_c - t_a)
+        p_c_b = p_w @ R_b.T + t_b
+        # 3. Cámara B -> píxel (solo los que están delante: no se puede dividir por z <= 0)
+        delante = p_c_b[:, 2] > 0.05
+        uv_b = np.full((len(uv_a), 2), np.nan)
+        if np.any(delante):
+            ceros = np.zeros(5) if dist is None else dist
+            uv_b[delante] = mc.proyectar(p_c_b[delante], K, ceros)
+        visible = delante.copy()
+        visible[delante] = ((uv_b[delante, 0] >= 0) & (uv_b[delante, 0] <= ancho - 1)
+                            & (uv_b[delante, 1] >= 0) & (uv_b[delante, 1] <= alto - 1))
+        return uv_b, visible
+
+
+    def evaluar_parejas(uv_b, uv_b_verdad, visible, umbral_px):
+        """Compara dónde dice el emparejador que está cada punto con dónde está de verdad.
+
+        uv_b: (K, 2) lo encontrado. uv_b_verdad, visible: de posicion_verdadera_en_b.
+        Una pareja es correcta si el punto se ve en B y el error es menor que umbral_px.
+        Devuelve: dict con error_px (K,) (infinito si el punto no se ve en B), correctas (K,) bool,
+        n, n_correctas, fraccion_correctas y error_mediano_px (de las correctas).
+        """
+        error = np.full(len(uv_b), np.inf)
+        error[visible] = np.linalg.norm(uv_b[visible] - uv_b_verdad[visible], axis=1)
+        correctas = error < umbral_px
+        n = len(uv_b)
+        return {
+            "error_px": error,
+            "correctas": correctas,
+            "n": n,
+            "n_correctas": int(correctas.sum()),
+            "fraccion_correctas": float(correctas.mean()) if n else 0.0,
+            "error_mediano_px": float(np.median(error[correctas])) if correctas.any() else float("nan"),
+        }
+
+
+    # =====================================================================
+    # Paso 21.4 — Dibujar las parejas
+    # =====================================================================
+    VERDE = (0, 200, 0)          # colores en el orden de OpenCV: azul, verde, rojo
+    ROJO = (0, 0, 255)
+    AMARILLO = (0, 220, 220)
+
+
+    def dibujar_parejas(gris_a, gris_b, uv_a, uv_b, correctas=None, max_lineas=300):
+        """Las dos imágenes juntas, A a la izquierda y B a la derecha, y una línea por pareja.
+
+        uv_a, uv_b: (K, 2) [px], la pareja k une uv_a[k] con uv_b[k].
+        correctas: (K,) bool o None. Con la verdad: verde las correctas y rojo las falsas; sin
+        ella (fotos reales), todas en amarillo.
+        max_lineas: con más parejas, se dibujan solo max_lineas repartidas (si no, no se ve nada).
+        Devuelve: imagen en color (alto, 2·ancho, 3) uint8.
+        """
+        alto, ancho = gris_a.shape
+        if gris_b.shape != gris_a.shape:
+            raise ValueError("las dos imágenes deben tener el mismo tamaño")
+        lienzo = cv2.cvtColor(np.hstack([gris_a, gris_b]), cv2.COLOR_GRAY2BGR)
+        k_total = len(uv_a)
+        paso = max(int(np.ceil(k_total / max_lineas)), 1)
+        for k in range(0, k_total, paso):
+            if correctas is None:
+                color = AMARILLO
+            else:
+                color = VERDE if correctas[k] else ROJO
+            p_a = (int(round(uv_a[k, 0])), int(round(uv_a[k, 1])))
+            p_b = (int(round(uv_b[k, 0])) + ancho, int(round(uv_b[k, 1])))     # B, desplazada
+            cv2.line(lienzo, p_a, p_b, color, 1, cv2.LINE_AA)
+            cv2.circle(lienzo, p_a, 3, color, -1, cv2.LINE_AA)
+            cv2.circle(lienzo, p_b, 3, color, -1, cv2.LINE_AA)
+        return lienzo
