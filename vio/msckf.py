@@ -443,6 +443,14 @@ class Msckf:
             res = tri.triangular(poses_c_w, xy, self.cfg_tri, self.focal)
             if not res["fiable"]:
                 est["sin_triangular"] += 1
+                # Diagnostico: POR QUÉ no se puede triangular
+                if res["motivo"] == "paralaje insuficiente":
+                    est["sin_paralaje"] += 1
+                elif res["motivo"] == "error de reproyección alto":
+                    est["reproyeccion"] += 1
+                    est["errores_px"].append(res["error_max_px"])
+                else:
+                    est["detras"] += 1
                 continue
             # 2. Residuos y jacobianos; 3. eliminar el punto
             r, H_x, H_f = residuo_pista(
@@ -496,6 +504,10 @@ class Msckf:
             "cortas": 0,
             "sin_triangular": 0,
             "chi2": 0,
+            "sin_paralaje": 0,
+            "reproyeccion": 0,
+            "detras": 0,
+            "errores_px": [],
             "filas": 0,
             "puntos_mapa": [],
             "saliente": None,

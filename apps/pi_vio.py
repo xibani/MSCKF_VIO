@@ -473,8 +473,10 @@ def main():
                         enviar(emisor, datos, destino_mapa)
             tiempos.append(r["tiempos_ms"])
             # Recuentos del MSCKF sumados desde el último aviso: qué pasa con las pistas
-            for clave in ("usadas", "cortas", "sin_triangular", "chi2", "quieto"):
+            for clave in ("usadas", "cortas", "sin_triangular", "chi2", "quieto",
+                          "sin_paralaje", "reproyeccion", "detras"):
                 suma_msckf[clave] = suma_msckf.get(clave, 0) + int(r["msckf"][clave])
+            suma_msckf["errores_px"] = suma_msckf.get("errores_px", []) + r["msckf"]["errores_px"]
             suma_msckf["imagenes"] = suma_msckf.get("imagenes", 0) + 1
             if r["t_ns"] - t_aviso_ns >= cfgs["vio"]["ejecucion"]["aviso_cada_s"] * 1e9:
                 t_aviso_ns = r["t_ns"]
@@ -484,6 +486,8 @@ def main():
                     f"  p = ({p[0]:+6.2f}, {p[1]:+6.2f}, {p[2]:+6.2f}) m | puntos "
                     f"{r['frontend']['activos']:3d} | pistas: usadas {s['usadas']:3d}"
                     f" cortas {s['cortas']:3d} sin triangular {s['sin_triangular']:3d}"
+                    f" (paralaje {s['sin_paralaje']} reproy {s['reproyeccion']} detrás {s['detras']}"
+                    f" err {np.median(s['errores_px']) if s['errores_px'] else 0:.0f} px)"
                     f" chi2 {s['chi2']:3d} | quieto {s['quieto']}/{s['imagenes']}"
                     f" | keyframes {pipeline.n_keyframes:3d} | {ms_total:5.1f} ms/imagen"
                 )
