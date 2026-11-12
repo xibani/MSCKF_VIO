@@ -49,6 +49,5 @@ recordings/
 *.mp4
 *.avi
 
-
-datos/vio_20261103_154054/
-datos/vio_20261103_154116/
+# Datos
+datos/vio_2026*/
