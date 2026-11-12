@@ -34,7 +34,7 @@ control:                      # etapa 16: órdenes del visor web a pi_vio
 
 mapeo:                        # etapa 17: puntos y keyframes para la reconstrucción en el PC
   ip_pc: null                 # IP del PC con apps/pc_mapa; null: solo se guarda en disco
-  puerto: 5007                # UDP, distinto del de la pose (5005) y del de la imagen (5006)
+  puerto: 5008                # UDP: pose 5005, imagen 5006, control 5007 y mapa 5008 (etapa 19)
   archivo: mapa.paquetes      # en la carpeta de la sesión: lo mismo que se envía, para repetirlo
   calidad_jpeg: 85            # imagen de cada keyframe; si no cabe en el paquete, se baja sola
   paralaje_min_grados: 2.0    # el MSCKF usa pistas desde 1°; el mapa pide más (error ≈ z·σ/θ)
