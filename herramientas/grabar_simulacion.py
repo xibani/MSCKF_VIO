@@ -4,10 +4,14 @@ herramientas/grabar_simulacion.py — Una grabación EuRoC SINTÉTICA, con imág
 Uso, desde ~/svo-pi:
     python -m herramientas.grabar_simulacion                  # datos/sim_vio
     python -m herramientas.grabar_simulacion --duracion 15
+    python -m herramientas.grabar_simulacion --textura --carpeta sim_textura   # etapa 20
 La trayectoria de la etapa 11, quieta los primeros segundos (para inicializar en reposo),
 vista por la cámara como manchas sobre fondo negro. Se escribe igual que una grabación de
 herramientas/grabar, más verdad.csv con la pose verdadera: así apps/pi_vio y el front-end
 se prueban de principio a fin con una respuesta conocida.
+Etapa 20: con --textura, en lugar de manchas se dibuja la habitación con un dibujo en las
+paredes, el suelo y el techo (vio/escena.py): imágenes parecidas a una foto, que es lo que
+necesitan SuperPoint y LightGlue. La trayectoria, la IMU y la verdad son las mismas.
 """
 
 import argparse
@@ -18,13 +22,14 @@ import cv2
 import numpy as np
 
 from captura import euroc
+from vio import escena
 from vio import modelo_camara as mc
 from vio import simulador as sim
 from vio.config import RAIZ_PROYECTO, cargar_config
 from vio.pipeline import CABECERA_POSES, linea_pose
 
 
-def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng, dist=None):
+def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng, dist=None, textura=False):
     """Simula y escribe la grabación en `carpeta`. Devuelve: la secuencia del simulador.
 
     cfg_vio: sección "vio" de config/simulador.yaml. cfg_ext: dict de config/camara_imu.yaml
@@ -32,6 +37,8 @@ def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng, dist=
     K, dist: la cámara con que se dibujan las imágenes. Para repetirla con apps/pi_vio deben
     ser las de config/camara_intrinsecos.yaml, que es lo que usará pi_vio para quitar la
     distorsión (dist=None: cámara sin distorsión).
+    textura: False, manchas sobre fondo negro (etapa 13); True, la habitación con dibujo
+    (etapa 20). Con textura, la secuencia devuelta lleva además "habitacion" (vio/escena.py).
     """
     carpeta = Path(carpeta)
     cfg = copy.deepcopy(cfg_vio)
@@ -52,14 +59,23 @@ def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng, dist=
         for t, w, a in zip(s["imu"]["t_ns"], s["imu"]["w"], s["imu"]["a"]):
             f.write(euroc.linea_imu(int(t), w, a))
 
-    # 3. Imágenes: una mancha por cada punto visto
+    # 3. Imágenes: una mancha por cada punto visto o, con textura, la habitación dibujada
+    if textura:
+        cfg_textura = cfg["textura"]
+        s["habitacion"] = escena.crear_habitacion(cfg["mundo"]["habitacion_m"], cfg_textura, rng)
+        rayos = escena.rayos_camara(K, dist, tamano)      # una vez: no dependen de la pose
     carpeta_png = euroc.carpeta_imagenes(carpeta)
     carpeta_png.mkdir(parents=True, exist_ok=True)
     with open(euroc.ruta_cam(carpeta), "w", encoding="utf-8") as f:
         f.write(euroc.CABECERA_CAM)
         for j, t in enumerate(s["camaras"]["t_ns"]):
-            uv = s["obs"]["uv"][s["obs"]["imagen"] == j]
-            imagen = sim.renderizar(uv, tamano, graba["sigma_mancha_px"], graba["brillo_mancha"])
+            if textura:
+                ideal, _ = escena.renderizar_habitacion(
+                    s["habitacion"], s["camaras"]["R_c_w"][j], s["camaras"]["t_c_w"][j], rayos)
+                imagen = escena.acabar_imagen(ideal, cfg_textura, rng)
+            else:
+                uv = s["obs"]["uv"][s["obs"]["imagen"] == j]
+                imagen = sim.renderizar(uv, tamano, graba["sigma_mancha_px"], graba["brillo_mancha"])
             nombre = euroc.nombre_imagen(int(t))
             cv2.imwrite(str(carpeta_png / nombre), imagen)
             f.write(euroc.linea_cam(int(t), nombre))
@@ -76,6 +92,8 @@ def main():
     parser = argparse.ArgumentParser(description="Grabación EuRoC sintética con verdad")
     parser.add_argument("--duracion", type=float, default=None, help="segundos (por defecto, el YAML)")
     parser.add_argument("--carpeta", default="sim_vio", help="nombre dentro de datos/")
+    parser.add_argument("--textura", action="store_true",
+                        help="habitación con dibujo en las paredes en lugar de manchas (etapa 20)")
     args = parser.parse_args()
 
     cfg_vio = cargar_config("simulador")["vio"]
@@ -84,8 +102,10 @@ def main():
     K, dist, tamano = mc.cargar_intrinsecos()
     carpeta = RAIZ_PROYECTO / cargar_config("proyecto")["carpeta_datos"] / args.carpeta
     s = guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cargar_config("camara_imu"),
-                                    np.random.default_rng(cfg_vio["semilla"]), dist=dist)
-    print(f"Grabación sintética en {carpeta}: {len(s['imu']['t_ns'])} muestras de IMU,"
+                                    np.random.default_rng(cfg_vio["semilla"]), dist=dist,
+                                    textura=args.textura)
+    tipo = "con textura" if args.textura else "de manchas"
+    print(f"Grabación sintética {tipo} en {carpeta}: {len(s['imu']['t_ns'])} muestras de IMU,"
           f" {len(s['camaras']['t_ns'])} imágenes, quieta los primeros "
           f"{cfg_vio['grabacion_sintetica']['reposo_s']} s")
 

@@ -96,3 +96,147 @@ def crear_habitacion(dimensiones, cfg, rng):
         ancho_m, alto_m = tamano_de_cara(cara, dimensiones)
         texturas.append(textura_aleatoria(ancho_m, alto_m, cfg, rng))
     return {"dimensiones": tuple(dimensiones), "px_por_m": cfg["px_por_m"], "texturas": texturas}
+
+
+# =====================================================================
+# Paso 20.2 — Del píxel al mundo: rayos y choque con la habitación
+# =====================================================================
+def rayos_camara(K, dist, tamano):
+    """La dirección del rayo de cada píxel, en ejes de la cámara.
+
+    El píxel (u, v) corresponde a las coordenadas normalizadas (x, y) (etapa 2: quitar los
+    intrínsecos y la distorsión). Todos los puntos p_c = z·(x, y, 1), con z > 0, caen en ese
+    píxel: esa es la recta. Su dirección es (x, y, 1), y con ella el parámetro del rayo es
+    directamente la profundidad z.
+    Solo depende de la cámara, no de la pose: se calcula una vez y vale para todas las imágenes.
+    tamano: (ancho, alto). dist: (k1, k2, p1, p2, k3) o None (sin distorsión).
+    Devuelve: array (alto, ancho, 3).
+    """
+    ancho, alto = tamano
+    u, v = np.meshgrid(np.arange(ancho, dtype=float), np.arange(alto, dtype=float))
+    uv = np.column_stack([u.ravel(), v.ravel()])
+    if dist is None:
+        xy = np.column_stack([(uv[:, 0] - K[0, 2]) / K[0, 0], (uv[:, 1] - K[1, 2]) / K[1, 1]])
+    else:
+        xy = mc.normalizar(uv, K, dist)
+    rayos = np.column_stack([xy, np.ones(len(xy))])
+    return rayos.reshape(alto, ancho, 3)
+
+
+def chocar_con_habitacion(origen, direcciones, dimensiones):
+    """Dónde choca cada rayo con las caras de la habitación, visto desde dentro.
+
+    origen: (3,) punto del que salen todos los rayos, DENTRO de la habitación.
+    direcciones: (N, 3). Los puntos de un rayo son origen + s·dirección, con s >= 0.
+
+    En cada eje el rayo solo puede salir por una de las dos caras: la del lado hacia el que
+    avanza. Por ejemplo, si la dirección tiene x > 0, por la cara x = +lx/2, y eso ocurre en
+        origen_x + s·dirección_x = lx/2   ->   s = (lx/2 - origen_x) / dirección_x
+    Se calcula s para los tres ejes y vale el MENOR: la primera cara que se alcanza.
+    Devuelve: (s (N,), cara (N,) de 0 a 5).
+    """
+    lx, ly, lz = dimensiones
+    minimo = np.array([-lx / 2, -ly / 2, 0.0])
+    maximo = np.array([lx / 2, ly / 2, lz])
+    if np.any(origen <= minimo) or np.any(origen >= maximo):
+        raise ValueError(f"la cámara está fuera de la habitación: {origen}")
+
+    s_ejes = np.full(direcciones.shape, np.inf)
+    for eje in range(3):
+        d = direcciones[:, eje]
+        hacia_max = d > 0
+        hacia_min = d < 0
+        s_ejes[hacia_max, eje] = (maximo[eje] - origen[eje]) / d[hacia_max]
+        s_ejes[hacia_min, eje] = (minimo[eje] - origen[eje]) / d[hacia_min]
+        # d == 0: el rayo es paralelo a esas dos caras y no las toca (se queda en infinito)
+    eje_choque = np.argmin(s_ejes, axis=1)
+    s = s_ejes[np.arange(len(s_ejes)), eje_choque]
+    hacia_max = direcciones[np.arange(len(s_ejes)), eje_choque] > 0
+    cara = 2 * eje_choque + hacia_max.astype(int)        # 2·eje, +1 si es la cara del máximo
+    return s, cara
+
+
+def coordenadas_en_cara(p_w, cara, dimensiones):
+    """Las dos coordenadas (a, b) [m] de un punto dentro de su cara (ver tamano_de_cara).
+
+    p_w: (N, 3) puntos sobre la cara número `cara` (un entero). Devuelve: (a (N,), b (N,)).
+    """
+    lx, ly, _ = dimensiones
+    if cara in (0, 1):
+        return p_w[:, 1] + ly / 2, p_w[:, 2]
+    if cara in (2, 3):
+        return p_w[:, 0] + lx / 2, p_w[:, 2]
+    return p_w[:, 0] + lx / 2, p_w[:, 1] + ly / 2
+
+
+def muestrear_bilineal(textura, columna, fila):
+    """Valor de `textura` en posiciones con decimales, por interpolación bilineal.
+
+    Una posición (columna, fila) cae entre 4 píxeles del dibujo. Su valor es la media de los
+    4, cada uno con un peso mayor cuanto más cerca está: si la parte decimal es (dc, df),
+        valor = (1-dc)(1-df)·arriba_izq + dc(1-df)·arriba_der + (1-dc)df·abajo_izq + dc·df·abajo_der
+    Sin esto (cogiendo el píxel más cercano) el dibujo avanzaría "a saltos" al moverse la
+    cámara, y Lucas-Kanade no podría medir desplazamientos de décimas de píxel.
+    columna, fila: (N,). Devuelve: (N,).
+    """
+    alto, ancho = textura.shape
+    columna = np.clip(columna, 0.0, ancho - 1.001)        # dentro del dibujo (el borde, repetido)
+    fila = np.clip(fila, 0.0, alto - 1.001)
+    c0 = np.floor(columna).astype(int)
+    f0 = np.floor(fila).astype(int)
+    dc = columna - c0
+    df = fila - f0
+    return ((1 - dc) * (1 - df) * textura[f0, c0] + dc * (1 - df) * textura[f0, c0 + 1]
+            + (1 - dc) * df * textura[f0 + 1, c0] + dc * df * textura[f0 + 1, c0 + 1])
+
+
+# =====================================================================
+# Paso 20.3 — La imagen desde una pose
+# =====================================================================
+def renderizar_habitacion(habitacion, R_c_w, t_c_w, rayos):
+    """Lo que ve la cámara desde una pose.
+
+    habitacion: de crear_habitacion. R_c_w, t_c_w: pose (mundo -> cámara, p_c = R_c_w·p_w + t_c_w).
+    rayos: de rayos_camara.
+    Devuelve: (imagen (alto, ancho) float de 0 a 255, profundidad (alto, ancho) [m]):
+    la profundidad es la z, en ejes de la cámara, del punto que se ve en cada píxel. No la
+    tendría una cámara real: es la "verdad" con la que comparar más adelante.
+    """
+    alto, ancho, _ = rayos.shape
+    dimensiones = habitacion["dimensiones"]
+    px_m = habitacion["px_por_m"]
+
+    # 1. Los rayos, en el mundo. De p_c = R_c_w·p_w + t_c_w se despeja p_w = R_c_wᵀ·(p_c - t_c_w):
+    #    el centro de la cámara (p_c = 0) está en -R_c_wᵀ·t_c_w y las direcciones giran con R_c_wᵀ
+    origen = -R_c_w.T @ t_c_w
+    direcciones = rayos.reshape(-1, 3) @ R_c_w                # cada fila: R_c_wᵀ · d_c
+
+    # 2. Dónde choca cada rayo
+    s, cara = chocar_con_habitacion(origen, direcciones, dimensiones)
+    p_w = origen + s[:, None] * direcciones
+
+    # 3. El brillo del dibujo en ese punto, cara por cara
+    imagen = np.zeros(alto * ancho)
+    for n in range(N_CARAS):
+        en_cara = cara == n
+        if not np.any(en_cara):
+            continue
+        a, b = coordenadas_en_cara(p_w[en_cara], n, dimensiones)
+        imagen[en_cara] = muestrear_bilineal(habitacion["texturas"][n], a * px_m, b * px_m)
+
+    # 4. Como la dirección es (x, y, 1), el parámetro s del rayo es la profundidad z
+    return imagen.reshape(alto, ancho), s.reshape(alto, ancho)
+
+
+def acabar_imagen(imagen, cfg, rng):
+    """De la imagen ideal a la que daría un sensor: un poco desenfocada, con ruido y en 8 bits.
+
+    cfg: sección "textura". El desenfoque imita a la lente (ningún objetivo enfoca un punto en
+    un solo píxel) y el ruido, al sensor: sin ellos las imágenes serían demasiado fáciles.
+    Devuelve: array (alto, ancho) uint8.
+    """
+    if cfg["desenfoque_px"] > 0:
+        imagen = cv2.GaussianBlur(imagen, (0, 0), cfg["desenfoque_px"])
+    if cfg["ruido_gris"] > 0:
+        imagen = imagen + rng.normal(0.0, cfg["ruido_gris"], imagen.shape)
+    return np.clip(np.round(imagen), 0, 255).astype(np.uint8)
