@@ -1,0 +1,18 @@
+# config/lightglue.yaml — Etapa 21: SuperPoint (detecta y describe puntos) + LightGlue (los empareja)
+# Solo se usa en el PC: necesita PyTorch.
+
+dispositivo: auto             # auto: tarjeta NVIDIA si PyTorch la ve, y si no el procesador; cpu; cuda
+
+superpoint:
+  max_puntos: 1024            # como mucho, los 1024 puntos más llamativos de cada imagen
+  umbral_deteccion: 0.0005    # puntuación mínima de un punto (de 0 a 1); el valor de sus autores
+  radio_nms_px: 4             # dos puntos no pueden estar a menos de 4 px (se queda el mejor)
+
+lightglue:
+  umbral_confianza: 0.1       # una pareja con menos confianza (de 0 a 1) se descarta
+  parada_temprana: 0.95       # si está así de segura a mitad de camino, termina antes (-1: nunca)
+  poda_puntos: 0.99           # deja de mirar puntos que seguro no tienen pareja (-1: nunca)
+
+evaluacion:                   # solo con imágenes del simulador, donde se sabe la verdad
+  umbral_correcta_px: 3.0     # una pareja es correcta si el error es menor que esto
+  instantes_s: [4.0, 4.5]     # los dos instantes de la trayectoria que se comparan por defecto

@@ -1,0 +1,7 @@
+# requirements-pc.txt — Lo que hace falta ADEMÁS en el PC para SuperPoint + LightGlue (etapa 21).
+# No se instala en la Pi. Uso:  pip install -r requirements-pc.txt
+# Si el PC tiene tarjeta NVIDIA, instala antes PyTorch con CUDA siguiendo https://pytorch.org
+# (si no, este archivo instala la versión para procesador, que también funciona, más lenta).
+torch
+torchvision
+lightglue @ git+https://github.com/cvg/LightGlue.git
