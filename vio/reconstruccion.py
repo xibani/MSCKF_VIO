@@ -79,10 +79,13 @@ class Reconstructor:
     def __init__(self):
         self.disperso = MapaDisperso()
         self.keyframes = []  # dicts de protocolo.leer_keyframe, en orden de llegada
-        self.recuentos = Counter()  # "puntos", "keyframe", "malos"
+        self.recuentos = Counter()  # "puntos", "keyframe", "prueba", "malos"
 
     def procesar(self, datos):
-        """Un paquete (bytes). Devuelve su tipo: "puntos", "keyframe" o "malos".
+        """Un paquete (bytes). Devuelve su tipo: "puntos", "keyframe", "prueba" o "malos".
+
+        "prueba" (etapa 19) no cambia este mapa: quien lo recibe (MapaPorPruebas) decide si
+        hay que empezar otro.
 
         Un paquete que no se entiende (de otra versión, cortado...) se cuenta y se ignora:
         en directo, por UDP, puede llegar cualquier cosa al puerto.
@@ -96,6 +99,9 @@ class Reconstructor:
             elif len(datos) > 0 and datos[0] == protocolo.VERSION_KEYFRAME:
                 self.keyframes.append(protocolo.leer_keyframe(datos))
                 tipo = "keyframe"
+            elif len(datos) > 0 and datos[0] == protocolo.VERSION_PRUEBA:
+                protocolo.leer_prueba(datos)  # solo se comprueba que está entero
+                tipo = "prueba"
         except (ValueError, struct.error):
             tipo = "malos"
         self.recuentos[tipo] += 1
@@ -128,6 +134,84 @@ class Reconstructor:
             rutas["figura"] = carpeta / "mapa.png"
             dibujar_mapa(rutas["figura"], p_w, self.keyframes)
         return rutas
+
+
+# =====================================================================
+# Etapa 19 — Un mapa por prueba
+# =====================================================================
+def carpeta_de_prueba(salida, n):
+    """La primera prueba se guarda en `salida`; las siguientes, en salida/prueba_2, _3..."""
+    salida = Path(salida)
+    return salida if n == 1 else salida / f"prueba_{n}"
+
+
+class MapaPorPruebas:
+    """Un Reconstructor por cada prueba del VIO.
+
+    Cada vez que el VIO se reinicia ("Nueva prueba" en el visor, o pi_vio relanzado) empieza
+    un mundo distinto: otro origen, otro rumbo, y los ids de los puntos vuelven a empezar en 0.
+    Si todo fuera al mismo Reconstructor, MapaDisperso haría la media de puntos que no tienen
+    nada que ver solo porque comparten id. Por eso, al llegar un aviso de prueba nueva
+    (versión 6) se guarda el mapa que había y se empieza otro, en otra carpeta.
+
+    salida: carpeta de la primera prueba.
+    nombre_copia: si no es None, cada paquete recibido se copia a ese archivo dentro de la
+    carpeta de su prueba (en directo: para poder repetirlo luego con --archivo).
+    """
+
+    def __init__(self, salida, nombre_copia=None):
+        self.salida = Path(salida)
+        self.nombre_copia = nombre_copia
+        self.ultimo_aviso = None  # bytes del último paquete de prueba visto
+        self.guardadas = []  # (número de prueba, carpeta, rutas escritas) de las ya cerradas
+        self._empezar(1)
+
+    def _empezar(self, n):
+        self.n = n
+        self.reconstructor = Reconstructor()
+        self.carpeta = carpeta_de_prueba(self.salida, n)
+        self.carpeta.mkdir(parents=True, exist_ok=True)
+        self.copia = None
+        if self.nombre_copia is not None:
+            self.copia = open(self.carpeta / self.nombre_copia, "wb")
+
+    def tiene_datos(self):
+        """¿Ha llegado algún punto o keyframe a la prueba en curso?"""
+        r = self.reconstructor.recuentos
+        return r["puntos"] + r["keyframe"] > 0
+
+    def procesar(self, datos):
+        """Un paquete (bytes). Devuelve su tipo, como Reconstructor.procesar."""
+        tipo = self.reconstructor.procesar(datos)
+        if tipo != "prueba":
+            if self.copia is not None:
+                protocolo.escribir_paquete(self.copia, datos)
+            return tipo
+        # Aviso de prueba nueva. El mismo aviso llega repetido (REPETICIONES_PRUEBA): solo
+        # cuenta la primera vez. Y si aún no había llegado nada, la prueba en curso ya sirve.
+        if datos != self.ultimo_aviso:
+            self.ultimo_aviso = datos
+            if self.tiene_datos():
+                self.cerrar()
+                self._empezar(self.n + 1)
+        return tipo
+
+    def vaciar_copia(self):
+        """Lleva al disco lo copiado hasta ahora (por si se va la luz)."""
+        if self.copia is not None:
+            self.copia.flush()
+
+    def cerrar(self):
+        """Guarda el mapa de la prueba en curso. Devuelve: dict con las rutas escritas."""
+        if self.copia is not None:
+            self.copia.close()
+            self.copia = None
+        rutas = self.reconstructor.guardar(self.carpeta)
+        self.guardadas.append((self.n, self.carpeta, rutas))
+        return rutas
+
+    def resumen(self):
+        return f"prueba {self.n} | " + self.reconstructor.resumen()
 
 
 # =====================================================================

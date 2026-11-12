@@ -122,7 +122,7 @@ ORDEN_REINICIAR = (
 
 
 # =====================================================================
-# Etapa 17 — Mapa: keyframes (versión 4) y puntos (versión 5), en el puerto 5007
+# Etapa 17 — Mapa: keyframes (versión 4) y puntos (versión 5), en el puerto 5008
 # =====================================================================
 # Versión 4, keyframe de mapeo. Cabecera '<BqI9d3d4d5dHHI':
 #     versión, t_ns, número de imagen, R_w_c (9), p_w_c (3), fx fy cx cy, distorsión (5),
@@ -250,6 +250,31 @@ def leer_puntos(datos):
     puntos = np.frombuffer(datos[TAMANO_CABECERA_PUNTOS:], dtype=TIPO_PUNTO_MAPA)
     p_w = np.column_stack([puntos["x"], puntos["y"], puntos["z"]]).astype(float)
     return t_ns, puntos["id"].astype(np.int64), p_w
+
+
+# =====================================================================
+# Etapa 19 — Prueba nueva (versión 6), en el puerto del mapa
+# =====================================================================
+# '<BqI': versión, t_ns de la imagen en que empieza la prueba, número de prueba (1, 2, 3...).
+# pi_vio lo envía al arrancar y en cada "Nueva prueba": lo que llegue después pertenece a
+# OTRO mapa (otro origen, otro rumbo, y los ids de los puntos vuelven a empezar en 0).
+VERSION_PRUEBA = 6
+FORMATO_PRUEBA = "<BqI"
+TAMANO_PRUEBA = struct.calcsize(FORMATO_PRUEBA)  # 13 bytes
+REPETICIONES_PRUEBA = 3  # UDP puede perder un paquete: este se envía varias veces
+
+
+def empaquetar_prueba(t_ns, n_prueba):
+    """Aviso de que empieza la prueba n_prueba -> un paquete de la versión 6."""
+    return struct.pack(FORMATO_PRUEBA, VERSION_PRUEBA, int(t_ns), int(n_prueba))
+
+
+def leer_prueba(datos):
+    """Inversa de empaquetar_prueba. Devuelve: (t_ns, n_prueba)."""
+    if len(datos) != TAMANO_PRUEBA or datos[0] != VERSION_PRUEBA:
+        raise ValueError("no es un paquete de prueba nueva (versión 6)")
+    _, t_ns, n_prueba = struct.unpack(FORMATO_PRUEBA, datos)
+    return t_ns, n_prueba
 
 
 # ---------------------------------------------------------------------
