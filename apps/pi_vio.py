@@ -19,7 +19,9 @@ Al encender la Pi lo lanza systemd (sistema/instalar_servicios.sh); "systemctl s
 Además de la pose (UDP 5005), cada pocas imágenes envía la imagen con sus pistas dibujadas
 (UDP 5006, etapa 14) para apps/visor_web.
 Etapa 18: los puntos del mapa y los keyframes de mapeo se guardan en mapa.paquetes y, si hay
-IP del PC (--ip-mapa, o mapeo.ip_pc en config/vio.yaml), se envían a apps/pc_mapa (UDP 5007).
+IP del PC (--ip-mapa, o mapeo.ip_pc en config/vio.yaml), se envían a apps/pc_mapa (UDP 5008).
+Etapa 19: cada "Nueva prueba" empieza también un mapa nuevo (mapa_2.paquetes, _3...) y avisa
+al PC, porque el VIO reiniciado tiene otro origen y vuelve a numerar los puntos desde 0.
 La trayectoria estimada se guarda en vio_trayectoria.csv (dentro de la grabación, o en
 datos/vio_AAAAMMDD_HHMMSS/ en vivo).
 """
@@ -189,6 +191,28 @@ def paquetes_mapa(r, K, dist, cfg_mapeo):
             tamano = (kf.gris.shape[1], kf.gris.shape[0])
             paquetes.append(protocolo.empaquetar_keyframe(kf, K, dist, tamano, jpeg))
     return paquetes
+
+
+def nombre_de_prueba(nombre, n_prueba):
+    """Nombre de un archivo de salida en la prueba n: la primera lo deja igual y las
+    siguientes añaden el número antes de la extensión (mapa.paquetes -> mapa_2.paquetes)."""
+    if n_prueba == 1:
+        return nombre
+    ruta = Path(nombre)
+    return f"{ruta.stem}_{n_prueba}{ruta.suffix}"
+
+
+def avisar_prueba(emisor, destino_mapa, t_ns, n_prueba):
+    """Etapa 19: avisa a apps/pc_mapa de que lo que llegue a partir de ahora es otro mapa.
+
+    Se envía varias veces porque UDP no garantiza la entrega y perder este aviso mezclaría
+    dos mapas; pc_mapa ignora las repeticiones.
+    """
+    if emisor is None or destino_mapa is None:
+        return
+    datos = protocolo.empaquetar_prueba(t_ns, n_prueba)
+    for _ in range(protocolo.REPETICIONES_PRUEBA):
+        enviar(emisor, datos, destino_mapa)
 
 
 # =====================================================================
@@ -405,11 +429,20 @@ def main():
                     carpeta / f"vio_trayectoria_{n_prueba}.csv", "w", encoding="utf-8"
                 )
                 salida.write(CABECERA_POSES)
+                # Etapa 19: también un mapa nuevo (otro origen y los ids vuelven a 0)
+                if archivo_mapa is not None:
+                    archivo_mapa.close()
+                    archivo_mapa = open(
+                        carpeta / nombre_de_prueba(cfg_mapeo["archivo"], n_prueba), "wb"
+                    )
+                    avisar_prueba(emisor, destino_mapa, evento[1], n_prueba)
                 pipeline = pipeline_nuevo()
                 t_aviso_ns, intentos_vistos, suma_msckf = None, 0, {}
                 print(
                     f"Reiniciado desde el visor (prueba {n_prueba}): QUIETO hasta VIO EN MARCHA..."
                 )
+            if n_imagenes == 0:  # etapa 19: al arrancar, por si pc_mapa ya tenía otro mapa
+                avisar_prueba(emisor, destino_mapa, evento[1], n_prueba)
             r = pipeline.nueva_imagen(evento[1], evento[2])
             n_imagenes += 1
             if con_vista and n_imagenes % cfg_vista["cada_n_imagenes"] == 0:
@@ -483,7 +516,8 @@ def main():
         resumen_tiempos(tiempos, cfgs["vio"]["ejecucion"]["presupuesto_ms"])
         if archivo_mapa is not None:
             print(
-                f"{pipeline.n_keyframes} keyframes de mapeo. Mapa: {carpeta / cfg_mapeo['archivo']}"
+                f"{pipeline.n_keyframes} keyframes de mapeo. Mapa: "
+                f"{carpeta / nombre_de_prueba(cfg_mapeo['archivo'], n_prueba)}"
             )
     else:
         print("El filtro no llegó a arrancar.")

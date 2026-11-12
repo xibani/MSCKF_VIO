@@ -2,7 +2,7 @@
 apps/pc_mapa.py — Etapa 17: recibe el mapa que envía la Pi y lo va construyendo en el PC.
 
 Uso, desde la raíz del proyecto:
-    python -m apps.pc_mapa                                    # en directo: escucha UDP 5007
+    python -m apps.pc_mapa                                    # en directo: escucha UDP 5008
     python -m apps.pc_mapa --archivo datos/vio_XXXX/mapa.paquetes   # repetir una sesión
     python -m apps.pc_mapa --archivo ... --salida datos/mi_mapa
 
@@ -16,6 +16,8 @@ Al terminar (Ctrl+C en directo, o al acabar el archivo) escribe en la carpeta de
     keyframes.csv      pose e intrínsecos de cada keyframe; keyframes/<indice>.jpg
     mapa.png           planta y alzado del mapa con los keyframes
     mapa.paquetes      (solo en directo) copia de lo recibido, para repetirlo con --archivo
+Etapa 19: si durante la sesión se pulsa "Nueva prueba" en el visor, el mapa de cada prueba
+va a su carpeta: la primera en la carpeta de salida y las siguientes en prueba_2/, prueba_3/...
 """
 
 import argparse
@@ -27,17 +29,21 @@ from pathlib import Path
 from apps.visor_web import ip_local_probable
 from vio import protocolo
 from vio.config import RAIZ_PROYECTO, cargar_config
-from vio.reconstruccion import Reconstructor
+from vio.reconstruccion import MapaPorPruebas
 
 TAMANO_BUFER_UDP = 4 << 20  # 4 MB: si el PC se retrasa, caben ~80 keyframes en espera
 
 
 def carpeta_salida(args):
-    """Carpeta de salida: la indicada, junto al archivo repetido, o datos/mapa_<fecha>."""
+    """Carpeta de salida: la indicada, junto al archivo repetido, o datos/mapa_<fecha>.
+
+    Junto al archivo, con su mismo nombre sin extensión: mapa.paquetes -> mapa/ y
+    mapa_2.paquetes -> mapa_2/ (etapa 19: así dos pruebas de una sesión no se pisan).
+    """
     if args.salida is not None:
         return Path(args.salida)
     if args.archivo is not None:
-        return Path(args.archivo).parent / "mapa"
+        return Path(args.archivo).parent / Path(args.archivo).stem
     return (
         RAIZ_PROYECTO
         / cargar_config("proyecto")["carpeta_datos"]
@@ -45,15 +51,16 @@ def carpeta_salida(args):
     )
 
 
-def desde_archivo(reconstructor, ruta):
+def desde_archivo(mapa, ruta):
     """Todos los paquetes de un archivo, como si llegaran por red."""
     for datos in protocolo.leer_archivo_paquetes(ruta):
-        reconstructor.procesar(datos)
-    print(reconstructor.resumen())
+        mapa.procesar(datos)
+    print(mapa.resumen())
 
 
-def en_directo(reconstructor, puerto, copia, aviso_cada_s=1.0):
-    """Escucha UDP hasta Ctrl+C. Cada paquete se procesa y se copia al archivo `copia`."""
+def en_directo(mapa, puerto, aviso_cada_s=1.0):
+    """Escucha UDP hasta Ctrl+C. Cada paquete lo procesa `mapa` (MapaPorPruebas), que
+    además lo copia al archivo de su prueba."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, TAMANO_BUFER_UDP)
     sock.bind(("0.0.0.0", puerto))
@@ -70,12 +77,14 @@ def en_directo(reconstructor, puerto, copia, aviso_cada_s=1.0):
             except socket.timeout:
                 datos = None
             if datos is not None:
-                reconstructor.procesar(datos)
-                protocolo.escribir_paquete(copia, datos)
+                n_antes = mapa.n
+                mapa.procesar(datos)
+                if mapa.n != n_antes:
+                    print(f"Prueba nueva: el mapa sigue en {mapa.carpeta}")
             if time.monotonic() - t_aviso >= aviso_cada_s:
                 t_aviso = time.monotonic()
-                print(" ", reconstructor.resumen())
-                copia.flush()
+                print(" ", mapa.resumen())
+                mapa.vaciar_copia()
     except KeyboardInterrupt:
         print("\nTerminado")
     finally:
@@ -94,25 +103,28 @@ def main():
     )
     parser.add_argument("--salida", default=None, help="carpeta donde guardar el mapa")
     parser.add_argument(
-        "--puerto", type=int, default=cfg_mapeo["puerto"], help="puerto UDP (5007)"
+        "--puerto", type=int, default=cfg_mapeo["puerto"], help="puerto UDP (5008)"
     )
     args = parser.parse_args()
 
     salida = carpeta_salida(args)
-    salida.mkdir(parents=True, exist_ok=True)
-    reconstructor = Reconstructor()
     if args.archivo is not None:
-        desde_archivo(reconstructor, args.archivo)
+        mapa = MapaPorPruebas(salida)
+        desde_archivo(mapa, args.archivo)
     else:
-        with open(salida / cfg_mapeo["archivo"], "wb") as copia:
-            en_directo(reconstructor, args.puerto, copia)
+        mapa = MapaPorPruebas(salida, nombre_copia=cfg_mapeo["archivo"])
+        en_directo(mapa, args.puerto)
+    mapa.cerrar()
 
-    rutas = reconstructor.guardar(salida)
-    if rutas:
-        print(f"Mapa guardado en {salida}:")
-        for ruta in rutas.values():
-            print("  ", ruta.name)
-    else:
+    # Una carpeta por prueba (etapa 19); normalmente, una sola
+    hay_algo = False
+    for _n, carpeta, rutas in mapa.guardadas:
+        if rutas:
+            hay_algo = True
+            print(f"Mapa guardado en {carpeta}:")
+            for ruta in rutas.values():
+                print("  ", ruta.name)
+    if not hay_algo:
         print(
             "No ha llegado nada: ¿están la Pi y el PC en la misma red y la IP es la de este PC?"
         )

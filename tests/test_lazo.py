@@ -133,6 +133,8 @@ def test_pi_vio_reinicia_y_abre_otro_csv(tmp_path):
     assert "Reiniciado desde el visor (prueba 2)" in salida
     assert (tmp_path / "vio_trayectoria.csv").read_text(encoding="utf-8").count("\n") > 1   # la 1.ª prueba
     assert (tmp_path / "vio_trayectoria_2.csv").read_text(encoding="utf-8").startswith("#t_ns")
+    # Etapa 19: y el mapa de la segunda prueba, en su propio archivo
+    assert (tmp_path / "mapa.paquetes").exists() and (tmp_path / "mapa_2.paquetes").exists()
 
 
 

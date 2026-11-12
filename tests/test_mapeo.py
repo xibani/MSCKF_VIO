@@ -576,3 +576,118 @@ def test_pc_mapa_en_directo(tmp_path):
     assert (
         len((tmp_path / "keyframes.csv").read_text(encoding="utf-8").splitlines()) == 2
     )
+
+
+# =====================================================================
+# Etapa 19 — Puertos sin repetir y un mapa por prueba
+# =====================================================================
+def test_puertos_udp_distintos():
+    # Cada cosa por su puerto: pose, imagen, control (órdenes del visor) y mapa
+    from apps import visor_web
+
+    cfg_vio = cargar_config("vio")
+    puertos = {
+        "pose": cargar_config("orientacion")["red"]["puerto"],
+        "imagen": cfg_vio["vista"]["puerto"],
+        "control": cfg_vio["control"]["puerto"],
+        "mapa": cfg_vio["mapeo"]["puerto"],
+    }
+    assert len(set(puertos.values())) == len(puertos), puertos
+    assert visor_web.PUERTO_CONTROL == puertos["control"]
+
+
+def test_paquete_prueba_ida_y_vuelta():
+    datos = protocolo.empaquetar_prueba(123_456_789, 3)
+    assert len(datos) == protocolo.TAMANO_PRUEBA == 13
+    assert datos[0] == protocolo.VERSION_PRUEBA == 6
+    assert protocolo.leer_prueba(datos) == (123_456_789, 3)
+    # Cortado, con un byte de más o de otra versión: se rechaza
+    for malo in (datos[:-1], datos + b"\x00", bytes([5]) + datos[1:], b""):
+        with pytest.raises(ValueError):
+            protocolo.leer_prueba(malo)
+
+
+def test_reconstructor_reconoce_el_aviso_de_prueba():
+    r = rec.Reconstructor()
+    assert r.procesar(protocolo.empaquetar_prueba(1, 2)) == "prueba"
+    assert r.procesar(protocolo.empaquetar_prueba(1, 2)[:-1]) == "malos"  # cortado
+    assert len(r.disperso) == 0 and r.keyframes == []  # el aviso no toca el mapa
+
+
+def test_nombre_de_prueba():
+    from apps.pi_vio import nombre_de_prueba
+
+    assert nombre_de_prueba("mapa.paquetes", 1) == "mapa.paquetes"
+    assert nombre_de_prueba("mapa.paquetes", 2) == "mapa_2.paquetes"
+    assert nombre_de_prueba("mapa.paquetes", 13) == "mapa_13.paquetes"
+
+
+def test_avisar_prueba_se_repite_y_no_falla_sin_red():
+    from apps.pi_vio import avisar_prueba
+
+    avisar_prueba(None, None, 5, 2)  # --sin-red: no hace nada
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receptor:
+        receptor.bind(("127.0.0.1", 0))
+        receptor.settimeout(2.0)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as emisor:
+            avisar_prueba(emisor, None, 5, 2)  # sin IP del PC: tampoco
+            avisar_prueba(emisor, receptor.getsockname(), 5, 2)
+        recibidos = [receptor.recvfrom(64)[0] for _ in range(protocolo.REPETICIONES_PRUEBA)]
+    assert recibidos == [protocolo.empaquetar_prueba(5, 2)] * protocolo.REPETICIONES_PRUEBA
+
+
+def test_mapa_por_pruebas_no_mezcla_dos_mundos(tmp_path):
+    # Dos pruebas con LOS MISMOS ids (el VIO reiniciado numera otra vez desde 0) pero puntos
+    # en sitios distintos: cada una debe acabar en su carpeta, sin hacer la media entre ellas
+    ids = np.arange(40)
+    p_1 = np.column_stack([np.linspace(0.0, 1.0, 40), np.zeros(40), np.ones(40)])
+    p_2 = p_1 + np.array([10.0, 0.0, 0.0])
+    aviso_1 = protocolo.empaquetar_prueba(100, 1)
+    aviso_2 = protocolo.empaquetar_prueba(900, 2)
+
+    mapa = rec.MapaPorPruebas(tmp_path, nombre_copia="mapa.paquetes")
+    for _ in range(3):
+        assert mapa.procesar(aviso_1) == "prueba"  # al arrancar: aún no hay nada, sigue en la 1
+    assert mapa.n == 1
+    paquetes_1 = protocolo.empaquetar_puntos(200, ids, p_1)
+    for datos in paquetes_1:
+        mapa.procesar(datos)
+    for _ in range(3):
+        mapa.procesar(aviso_2)  # repetido: solo la primera vez empieza otra prueba
+    assert mapa.n == 2 and not mapa.tiene_datos()
+    paquetes_2 = protocolo.empaquetar_puntos(1000, ids, p_2)
+    for datos in paquetes_2:
+        mapa.procesar(datos)
+    mapa.cerrar()
+
+    assert [n for n, _, _ in mapa.guardadas] == [1, 2]
+    q_1, _ = rec.leer_ply(tmp_path / "puntos_3d.ply")
+    q_2, _ = rec.leer_ply(tmp_path / "prueba_2" / "puntos_3d.ply")
+    assert np.allclose(q_1, p_1, atol=1e-5) and np.allclose(q_2, p_2, atol=1e-5)
+    # La copia de cada prueba lleva solo sus paquetes (sin los avisos): se puede repetir sola
+    assert list(protocolo.leer_archivo_paquetes(tmp_path / "mapa.paquetes")) == paquetes_1
+    assert (
+        list(protocolo.leer_archivo_paquetes(tmp_path / "prueba_2" / "mapa.paquetes"))
+        == paquetes_2
+    )
+
+
+def test_mapa_por_pruebas_sin_avisos_es_un_solo_mapa(tmp_path):
+    # Un archivo mapa.paquetes no lleva avisos: todo va a la carpeta de salida, como antes
+    mapa = rec.MapaPorPruebas(tmp_path / "mapa")
+    for datos in protocolo.empaquetar_puntos(1, np.arange(30), np.ones((30, 3))):
+        mapa.procesar(datos)
+    rutas = mapa.cerrar()
+    assert mapa.n == 1 and rutas["ply"] == tmp_path / "mapa" / "puntos_3d.ply"
+    assert not (tmp_path / "mapa" / "mapa.paquetes").exists()  # sin copia si no se pide
+
+
+def test_carpeta_salida_de_pc_mapa(tmp_path):
+    from argparse import Namespace
+
+    from apps.pc_mapa import carpeta_salida
+
+    sesion = tmp_path / "vio_x"
+    assert carpeta_salida(Namespace(salida=None, archivo=str(sesion / "mapa.paquetes"))) == sesion / "mapa"
+    assert carpeta_salida(Namespace(salida=None, archivo=str(sesion / "mapa_2.paquetes"))) == sesion / "mapa_2"
+    assert carpeta_salida(Namespace(salida="otra", archivo=None)).name == "otra"
