@@ -61,3 +61,16 @@ vio:
     rampa_s: 2.0               # arranque suave hasta la velocidad de la trayectoria
     sigma_mancha_px: 1.5       # cada punto se dibuja como una mancha gaussiana
     brillo_mancha: 200
+  
+  textura:                     # etapa 20: habitación con dibujo en las paredes, para imágenes "de verdad"
+    px_por_m: 200              # resolución del dibujo: 1 píxel del dibujo = 5 mm de pared
+    manchas_m: [1.0, 0.4, 0.15]  # tamaños de las manchas suaves de fondo [m]
+    gris_medio: 110            # brillo medio del fondo (0-255)
+    contraste_manchas: 60      # cuánto se apartan las manchas del brillo medio
+    rectangulos_por_m2: 12     # "cuadros" de gris uniforme por metro cuadrado: dan las esquinas
+    lado_rectangulo_m: [0.06, 0.45]   # lado mínimo y máximo de cada rectángulo [m]
+    gris_min: 20               # gris de cada rectángulo, al azar entre estos dos
+    gris_max: 235
+    suavizado_px: 1.2          # suavizado del dibujo (en píxeles del dibujo): bordes sin dientes
+    desenfoque_px: 0.7         # desenfoque de la lente en la imagen final [px]
+    ruido_gris: 2.0            # ruido del sensor (desviación típica, en niveles de gris)
