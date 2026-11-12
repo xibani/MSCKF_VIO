@@ -10,7 +10,7 @@ Wants=NetworkManager.service
 [Service]
 # Se ejecuta una vez al arrancar y termina (como root: necesita activar conexiones)
 Type=oneshot
-ExecStart=/bin/bash @PROEYCTO@/sistema/red_arranque.sh @ESPERA@ @CONEXION@
+ExecStart=/bin/bash @PROYECTO@/sistema/red_arranque.sh @ESPERA@ @CONEXION@
 RemainAfterExit=yes
 
 [Install]
