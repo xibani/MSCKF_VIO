@@ -2,7 +2,8 @@
 herramientas/calibrar_camara_imu.py — Giro cámara-IMU (R_i_c) y desfase t_d con el tablero (etapa 7.4).
 
 Uso, desde ~/proyectos/MSCKF_VIO, con grabaciones de herramientas.grabar moviendo la placa
-delante del tablero de la 7.1:
+delante de un tablero quieto: la plantilla AprilGrid de Kalibr o el de ajedrez de la 7.1
+(config/calibracion.yaml -> camara_imu.objetivo):
     python -m herramientas.calibrar_camara_imu datos/20261113_180000
     python -m herramientas.calibrar_camara_imu datos/20261113_180000 datos/20261113_180300 datos/20261113_180600
     python -m herramientas.calibrar_camara_imu datos/2026111* --guardar   # escribe config/camara_imu.yaml
@@ -33,16 +34,44 @@ AVISO_CADA_IMAGENES = 200                 # cada cuántas imágenes se imprime e
 # =====================================================================
 # 1. Leer una grabación
 # =====================================================================
-def posturas_grabacion(carpeta, K, dist, cfg_tablero, cfg):
+def preparar_objetivo(cfg_cal):
+    """Función que busca el tablero elegido en config/calibracion.yaml (camara_imu.objetivo).
+
+    "tablero": el de ajedrez de la 7.1 (sección tablero). "aprilgrid": la plantilla de Kalibr
+    (sección aprilgrid). Devuelve: función gris -> (esquinas (N, 2), puntos_3d (N, 3)), o
+        (None, None) si no lo encuentra.
+    """
+    objetivo = cfg_cal["camara_imu"]["objetivo"]
+    if objetivo == "tablero":
+        t = cfg_cal["tablero"]
+        puntos_3d = cc.puntos_tablero(t["esquinas_x"], t["esquinas_y"], t["lado_m"])
+
+        def detectar(gris):
+            esquinas = cc.detectar_esquinas(gris, t["esquinas_x"], t["esquinas_y"])
+            return (None, None) if esquinas is None else (esquinas, puntos_3d)
+        return detectar
+
+    if objetivo == "aprilgrid":
+        a = cfg_cal["aprilgrid"]
+        detector = cci.crear_detector_aprilgrid(a["bits_borde"])
+        modelo = cci.puntos_aprilgrid(a["tags_x"], a["tags_y"], a["lado_tag_m"], a["espacio_relativo"])
+
+        def detectar(gris):
+            return cci.detectar_aprilgrid(gris, detector, modelo, a["tags_min"])
+        return detectar
+
+    raise ValueError(f'camara_imu.objetivo = "{objetivo}": tiene que ser "tablero" o "aprilgrid"')
+
+
+def posturas_grabacion(carpeta, K, dist, detectar, cfg):
     """Detecta el tablero en cada imagen y calcula su postura.
 
+    detectar: función de preparar_objetivo.
     Devuelve: (t_ns (M,) int64, R_c_b lista de M (3, 3), cuenta) con solo las imágenes
         válidas. cuenta: dict con cuántas imágenes había y por qué se descartó cada una.
     """
     t_ns, nombres = euroc.leer_cam(euroc.ruta_cam(carpeta))
     carpeta_png = euroc.carpeta_imagenes(carpeta)
-    puntos_3d = cc.puntos_tablero(cfg_tablero["esquinas_x"], cfg_tablero["esquinas_y"],
-                                  cfg_tablero["lado_m"])
     cuenta = {"imagenes": len(nombres), "movidas": 0, "sin_tablero": 0, "reproyeccion": 0}
     t_validas, R_validas = [], []
     for k, (t, nombre) in enumerate(zip(t_ns, nombres)):
@@ -52,7 +81,7 @@ def posturas_grabacion(carpeta, K, dist, cfg_tablero, cfg):
         if gris is None or cc.nitidez(gris) < cfg["nitidez_min"]:
             cuenta["movidas"] += 1
             continue
-        esquinas = cc.detectar_esquinas(gris, cfg_tablero["esquinas_x"], cfg_tablero["esquinas_y"])
+        esquinas, puntos_3d = detectar(gris)
         if esquinas is None:
             cuenta["sin_tablero"] += 1
             continue
@@ -65,9 +94,9 @@ def posturas_grabacion(carpeta, K, dist, cfg_tablero, cfg):
     return np.array(t_validas, dtype=np.int64), R_validas, cuenta
 
 
-def calibrar_grabacion(carpeta, K, dist, cfg_tablero, cfg):
+def calibrar_grabacion(carpeta, K, dist, detectar, cfg):
     """Calibra con una grabación. Devuelve: (resultado de cci.calibrar_giros o None, cuenta)."""
-    t_cam_ns, R_c_b, cuenta = posturas_grabacion(carpeta, K, dist, cfg_tablero, cfg)
+    t_cam_ns, R_c_b, cuenta = posturas_grabacion(carpeta, K, dist, detectar, cfg)
     t_imu_ns, w, _ = euroc.leer_imu(euroc.ruta_imu(carpeta))
     if len(t_cam_ns) < 3:
         return None, cuenta
@@ -148,7 +177,9 @@ def main():
     args = parser.parse_args()
 
     cfg_cal = cargar_config("calibracion")
-    cfg, cfg_tablero = cfg_cal["camara_imu"], cfg_cal["tablero"]
+    cfg = cfg_cal["camara_imu"]
+    detectar = preparar_objetivo(cfg_cal)
+    print(f"Tablero: {cfg['objetivo']} (config/calibracion.yaml -> camara_imu.objetivo)")
     K, dist, _ = mc.cargar_intrinsecos()
     actual = cargar_config("camara_imu")
     R_regla = np.array(actual["R_i_c"], dtype=float)
@@ -156,11 +187,12 @@ def main():
     validos = []
     for carpeta in [Path(c) for c in args.carpetas]:
         print(f"\n=== {carpeta} ===")
-        r, cuenta = calibrar_grabacion(carpeta, K, dist, cfg_tablero, cfg)
+        r, cuenta = calibrar_grabacion(carpeta, K, dist, detectar, cfg)
         print(f"  imágenes: {cuenta['imagenes']} | movidas {cuenta['movidas']} | sin tablero "
               f"{cuenta['sin_tablero']} | con mucho error {cuenta['reproyeccion']}")
         if r is None:
-            print("  NO VALE: casi ninguna imagen con el tablero")
+            print(f"  NO VALE: casi ninguna imagen con el tablero (¿es el de camara_imu.objetivo = "
+                  f"{cfg['objetivo']}?)")
             continue
         imprimir_resultado(r, R_regla)
         dibujar(r, carpeta / "calibracion_camara_imu.png", str(carpeta.name))

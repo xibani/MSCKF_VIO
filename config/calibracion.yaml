@@ -6,6 +6,15 @@ tablero:
   esquinas_y: 6            # esquinas interiores en vertical
   lado_m: 0.025            # lado de un cuadro, MEDIDO con regla sobre el papel impreso [m]
 
+aprilgrid:                 # etapa 7.4: plantilla de Kalibr (datos/kalibr/target.pdf), tags AprilTag 36h11
+  tags_x: 6                # tags en horizontal
+  tags_y: 6                # tags en vertical
+  lado_tag_m: 0.024        # lado del cuadrado negro de un tag, MEDIDO en el papel [m]
+                           # (6 tags + 5 huecos de una fila = 7,5 lados: mide la fila y divide)
+  espacio_relativo: 0.3    # hueco entre tags / lado del tag (0,72 / 2,4 cm en el PDF)
+  bits_borde: 2            # Kalibr dibuja los tags con un borde negro de 2 celdas
+  tags_min: 4              # con menos tags a la vista la imagen no se usa
+
 camara:
   imagenes_objetivo: 30    # imágenes a capturar
   zonas_cobertura: 3       # la imagen se divide en 3 x 3 zonas para medir la cobertura
@@ -37,6 +46,7 @@ allan:                     # etapa 7.3: ruido de la IMU por varianza de Allan
   referencia_ruido_acc: 3.9e-3   # hoja de datos [m/s²/√Hz] (400 µg/√Hz)
 
 camara_imu:                # etapa 7.4: giro cámara-IMU (R_i_c) y desfase t_d con el giroscopio
+  objetivo: aprilgrid      # tablero de las grabaciones: "aprilgrid" (Kalibr) o "tablero" (ajedrez, 7.1)
   nitidez_min: 30.0        # imágenes más movidas se descartan (en movimiento baja de 100)
   reproyeccion_max_px: 1.5 # postura del tablero con más error que esto: imagen descartada
   hueco_max_s: 0.08        # imágenes válidas más separadas no dan velocidad (a 20 fps: 0,05 s)

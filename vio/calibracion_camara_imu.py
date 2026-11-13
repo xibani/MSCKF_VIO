@@ -7,8 +7,9 @@ la velocidad de giro es LA MISMA, solo que cada sensor la ve en sus propios ejes
 donde ω_i es lo que mide el giroscopio (ejes de la IMU), ω_c la velocidad de giro en ejes
 de la cámara, R_i_c el giro buscado y b_g el sesgo del giroscopio.
 
-    - ω_c sale de las imágenes: con un tablero de ajedrez quieto delante, cada imagen da
-      la orientación de la cámara respecto al tablero (solvePnP); entre dos imágenes
+    - ω_c sale de las imágenes: con un tablero quieto delante (el de ajedrez de la 7.1 o
+      la plantilla AprilGrid de Kalibr), cada imagen da la orientación de la cámara respecto
+      al tablero (solvePnP); entre dos imágenes
       seguidas, el giro dividido por el tiempo es la velocidad media de giro.
     - ω_i la da el giroscopio, pero con su reloj. La imagen sellada en t_cam corresponde
       en realidad al instante t_cam + t_d del reloj de la IMU (convención de Kalibr).
@@ -27,13 +28,84 @@ from vio import so3
 
 
 # =====================================================================
+# 0. La plantilla de Kalibr (AprilGrid), alternativa al tablero de ajedrez
+# =====================================================================
+# Una AprilGrid es una rejilla de "tags" AprilTag (familia 36h11): cuadrados negros con un
+# código de 6 x 6 celdas dentro. Cada tag tiene un número (id) distinto, así que:
+#   - se puede usar aunque solo se vea una parte (el tablero de ajedrez hay que verlo entero);
+#   - no hay duda de cuál es cada esquina, aunque la placa gire.
+# Disposición de Kalibr (comprobada con datos/kalibr/target.pdf): el id 0 abajo a la
+# izquierda, los ids crecen hacia la derecha y luego hacia ARRIBA (id = fila · tags_x +
+# columna, fila contada desde abajo). Ejes del tablero: x a la derecha, y hacia arriba,
+# origen en la esquina de abajo a la izquierda del tag 0. Los tags están dibujados girados
+# 180°: la primera esquina que da OpenCV es la de abajo a la DERECHA, y luego sigue en el
+# sentido de las agujas del reloj (abajo izquierda, arriba izquierda, arriba derecha).
+
+def crear_detector_aprilgrid(bits_borde):
+    """Detector de tags AprilTag 36h11 de OpenCV, con refinado subpíxel de las esquinas.
+
+    bits_borde: grosor del borde negro en celdas (Kalibr dibuja 2; el estándar es 1).
+    Refinado "APRILTAG": ajusta rectas a los cuatro bordes del cuadrado y corta. El refinado
+    SUBPIX (cornerSubPix) está pensado para las esquinas en X del ajedrez: en la esquina de
+    un cuadrado suelto se desvía (en el test, 0,8 px de error frente a 0,2 px con APRILTAG).
+    """
+    diccionario = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    parametros = cv2.aruco.DetectorParameters()
+    parametros.markerBorderBits = bits_borde
+    parametros.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
+    return cv2.aruco.ArucoDetector(diccionario, parametros)
+
+
+def puntos_aprilgrid(tags_x, tags_y, lado_m, espacio_relativo):
+    """Posición 3D (Z = 0) de las 4 esquinas de cada tag, en el orden en que las da OpenCV.
+
+    lado_m: lado del cuadrado negro de un tag [m]. espacio_relativo: hueco entre tags / lado.
+    Devuelve: dict id -> array (4, 3) [m].
+    """
+    paso = lado_m * (1.0 + espacio_relativo)          # de un tag al siguiente
+    modelo = {}
+    for fila in range(tags_y):                          # fila 0 = la de abajo
+        for columna in range(tags_x):
+            x = columna * paso                          # esquina de abajo a la izquierda del tag
+            y = fila * paso
+            modelo[fila * tags_x + columna] = np.array([
+                [x + lado_m, y, 0.0],                   # abajo derecha (la 1ª de OpenCV)
+                [x, y, 0.0],                            # abajo izquierda
+                [x, y + lado_m, 0.0],                   # arriba izquierda
+                [x + lado_m, y + lado_m, 0.0]])         # arriba derecha
+    return modelo
+
+
+def detectar_aprilgrid(gris, detector, modelo, tags_min):
+    """Busca los tags de la AprilGrid y empareja cada esquina con su punto 3D.
+
+    Devuelve: (esquinas (4·T, 2) [px], puntos_3d (4·T, 3) [m]) con los T tags reconocidos,
+        o (None, None) si se ven menos de tags_min.
+    """
+    esquinas, ids, _ = detector.detectMarkers(gris)
+    if ids is None:
+        return None, None
+    lista_2d, lista_3d = [], []
+    for esquinas_tag, id_tag in zip(esquinas, ids.ravel()):
+        if int(id_tag) in modelo:                       # un tag de otra plantilla: fuera
+            lista_2d.append(esquinas_tag.reshape(4, 2))
+            lista_3d.append(modelo[int(id_tag)])
+    if len(lista_2d) < tags_min:
+        return None, None
+    return np.vstack(lista_2d).astype(np.float64), np.vstack(lista_3d)
+
+
+# =====================================================================
 # 1. Orientación de la cámara respecto al tablero, en cada imagen
 # =====================================================================
 def postura_tablero(esquinas, puntos_3d, K, dist):
     """Postura del tablero vista desde la cámara (solvePnP) y su error de reproyección.
 
-    esquinas: array (N, 2) [px] de calibracion_camara.detectar_esquinas.
-    puntos_3d: array (N, 3) [m] de calibracion_camara.puntos_tablero (mismo orden).
+    Vale para el tablero de ajedrez y para la AprilGrid: solo necesita parejas esquina-punto.
+    El tamaño del tablero solo cambia la distancia (t_c_b), no la orientación (R_c_b): un
+    tablero el doble de grande al doble de distancia se ve exactamente igual.
+    esquinas: array (N, 2) [px] (detectar_esquinas o detectar_aprilgrid).
+    puntos_3d: array (N, 3) [m], en el mismo orden.
     Devuelve: (R_c_b (3, 3), t_c_b (3,) [m], error [px]) donde p_c = R_c_b·p_b + t_c_b
         (b = ejes del tablero). error = raíz del error cuadrático medio de las esquinas.
     """

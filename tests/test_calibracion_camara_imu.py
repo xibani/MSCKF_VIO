@@ -3,9 +3,13 @@
 Se inventa un movimiento de la placa (giros suaves por los tres ejes) con un montaje un
 poco torcido, un desfase de tiempo y un sesgo conocidos, y se comprueba que se recuperan:
     - con las posturas del tablero calculadas directamente (rápido, sin imágenes);
-    - de principio a fin: se DIBUJAN las imágenes del tablero, se escribe una grabación
-      EuRoC como la de herramientas.grabar y se pasa por la herramienta.
+    - de principio a fin: se DIBUJAN las imágenes del tablero (el de ajedrez de la 7.1 y la
+      AprilGrid de Kalibr), se escribe una grabación EuRoC como la de herramientas.grabar y
+      se pasa por la herramienta.
 """
+
+import shutil
+import subprocess
 
 import cv2
 import numpy as np
@@ -14,13 +18,14 @@ import yaml
 
 from captura import euroc
 from herramientas import calibrar_camara_imu as herramienta
-from vio import calibracion_camara as cc
 from vio import calibracion_camara_imu as cci
 from vio import so3
-from vio.config import cargar_config
+from vio.config import RAIZ_PROYECTO, cargar_config
 
 CFG = cargar_config("calibracion")["camara_imu"]
 TABLERO = {"esquinas_x": 9, "esquinas_y": 6, "lado_m": 0.025}     # el de la 7.1
+APRILGRID = {"tags_x": 6, "tags_y": 6, "lado_tag_m": 0.024, "espacio_relativo": 0.3,
+             "bits_borde": 2, "tags_min": 4}                       # datos/kalibr/target.pdf
 
 # El montaje "de verdad" del simulacro: el de regla girado ~1,4° (lo que se quiere medir)
 R_REGLA = np.array(cargar_config("camara_imu")["R_i_c"], dtype=float)
@@ -59,14 +64,30 @@ def giroscopio(duracion_s, amplitud, ruido_rad_s, rng):
     return t, w + rng.normal(0.0, ruido_rad_s, w.shape)
 
 
-def tablero_en_el_mundo(distancia_m):
-    """Ejes del tablero (b) en el mundo: de frente a la cámara en reposo, centrado, a esa distancia."""
+def tamano_objetivo(objetivo):
+    """Ancho y alto [m] de la zona útil del tablero, en sus propios ejes."""
+    if objetivo == "tablero":
+        return ((TABLERO["esquinas_x"] - 1) * TABLERO["lado_m"],
+                (TABLERO["esquinas_y"] - 1) * TABLERO["lado_m"])
+    lado, hueco = APRILGRID["lado_tag_m"], APRILGRID["lado_tag_m"] * APRILGRID["espacio_relativo"]
+    return (APRILGRID["tags_x"] * lado + (APRILGRID["tags_x"] - 1) * hueco,
+            APRILGRID["tags_y"] * lado + (APRILGRID["tags_y"] - 1) * hueco)
+
+
+def tablero_en_el_mundo(distancia_m, objetivo="tablero"):
+    """Ejes del tablero (b) en el mundo: de frente a la cámara en reposo, centrado, a esa distancia.
+
+    Ajedrez: x a la derecha, y hacia ABAJO (como la imagen), z alejándose de la cámara.
+    AprilGrid (Kalibr): x a la derecha, y hacia ARRIBA, z hacia la cámara: es el de ajedrez
+    con y y z dados la vuelta.
+    """
     R_w_c0 = R_I_C                                    # en t = 0 la IMU no está girada
     p_w_c0 = P_I_C
-    ancho = (TABLERO["esquinas_x"] - 1) * TABLERO["lado_m"]
-    alto = (TABLERO["esquinas_y"] - 1) * TABLERO["lado_m"]
-    p_w_b = p_w_c0 + R_w_c0 @ np.array([-ancho / 2, -alto / 2, distancia_m])
-    return R_w_c0, p_w_b
+    R_w_b = R_w_c0 if objetivo == "tablero" else R_w_c0 @ np.diag([1.0, -1.0, -1.0])
+    ancho, alto = tamano_objetivo(objetivo)
+    # El centro del tablero, justo delante de la cámara
+    p_w_b = p_w_c0 + R_w_c0 @ np.array([0.0, 0.0, distancia_m]) - R_w_b @ np.array([ancho / 2, alto / 2, 0.0])
+    return R_w_b, p_w_b
 
 
 def postura_verdad(tau, amplitud, R_w_b, p_w_b):
@@ -203,13 +224,46 @@ def test_guardar_camara_imu_se_lee_como_antes(tmp_path):
 
 
 # =====================================================================
-# De principio a fin: imágenes dibujadas y grabación EuRoC
+# AprilGrid (plantilla de Kalibr)
 # =====================================================================
-PX_CUADRO = 40                                   # lado de un cuadro en la imagen del tablero [px]
+def test_puntos_aprilgrid_con_la_disposicion_de_kalibr():
+    modelo = cci.puntos_aprilgrid(6, 6, 0.024, 0.3)
+    paso = 0.024 * 1.3
+    assert len(modelo) == 36
+    assert np.allclose(modelo[0], [[0.024, 0, 0], [0, 0, 0], [0, 0.024, 0], [0.024, 0.024, 0]])
+    assert np.allclose(modelo[5][1], [5 * paso, 0, 0])          # id 5: abajo a la derecha
+    assert np.allclose(modelo[6][1], [0, paso, 0])              # id 6: encima del 0
+    assert np.allclose(modelo[35][3], [5 * paso + 0.024, 5 * paso + 0.024, 0])
 
 
-def imagen_tablero():
-    """Tablero de 10 x 7 cuadros (9 x 6 esquinas interiores) con un cuadro de margen blanco."""
+@pytest.mark.skipif(shutil.which("pdftoppm") is None, reason="sin pdftoppm (apt install poppler-utils)")
+def test_aprilgrid_cuadra_con_el_pdf_de_kalibr(tmp_path):
+    # La plantilla impresa de verdad: se rasteriza el PDF y las 144 esquinas detectadas tienen
+    # que caer donde dice el modelo (homografía del plano del tablero a la imagen)
+    subprocess.run(["pdftoppm", "-r", "150", "-png", "-singlefile",
+                    str(RAIZ_PROYECTO / "datos" / "kalibr" / "target.pdf"), str(tmp_path / "plantilla")],
+                   check=True)
+    gris = cv2.imread(str(tmp_path / "plantilla.png"), cv2.IMREAD_GRAYSCALE)
+    detector = cci.crear_detector_aprilgrid(2)
+    modelo = cci.puntos_aprilgrid(6, 6, 0.024, 0.3)
+    esquinas, puntos = cci.detectar_aprilgrid(gris, detector, modelo, 4)
+    assert len(esquinas) == 144
+    H, _ = cv2.findHomography(puntos[:, :2], esquinas, 0)
+    proyectados = cv2.perspectiveTransform(puntos[:, :2].reshape(-1, 1, 2), H).reshape(-1, 2)
+    assert np.abs(proyectados - esquinas).max() < 1.5           # [px] a 150 ppp (1 px = 0,17 mm)
+
+
+PX_CUADRO = 40                                   # lado de un cuadro del ajedrez en la textura [px]
+PX_POR_M = 2500.0                                # [px/m]: así lado (60 px) y paso (78 px) son enteros
+MARGEN_PX = 40                                   # margen blanco de la textura de la AprilGrid
+
+
+def textura_tablero():
+    """Tablero de 10 x 7 cuadros (9 x 6 esquinas interiores) con un cuadro de margen blanco.
+
+    Devuelve: (imagen, A) con A la matriz que pasa de píxel de la textura a metros del tablero
+    (Z = 0). Esquina interior (0, 0) = píxel (2·PX_CUADRO, 2·PX_CUADRO).
+    """
     columnas, filas = TABLERO["esquinas_x"] + 1, TABLERO["esquinas_y"] + 1
     img = np.full(((filas + 2) * PX_CUADRO, (columnas + 2) * PX_CUADRO), 255, np.uint8)
     for f in range(filas):
@@ -217,25 +271,72 @@ def imagen_tablero():
             if (f + c) % 2 == 0:
                 y, x = (f + 1) * PX_CUADRO, (c + 1) * PX_CUADRO
                 img[y:y + PX_CUADRO, x:x + PX_CUADRO] = 0
-    return img
-
-
-def dibujar_vista(textura, R_c_b, t_c_b):
-    """Lo que ve la cámara: homografía del plano del tablero (Z = 0) a la imagen.
-
-    Esquina interior (0, 0) del tablero = píxel (2·PX_CUADRO, 2·PX_CUADRO) de la textura.
-    De píxel de textura a metros del tablero: A; de metros (Z = 0) a la imagen: K·[r1 r2 t].
-    """
     escala = TABLERO["lado_m"] / PX_CUADRO
     A = np.array([[escala, 0.0, -2 * PX_CUADRO * escala],
                   [0.0, escala, -2 * PX_CUADRO * escala],
                   [0.0, 0.0, 1.0]])
+    return img, A
+
+
+def textura_aprilgrid():
+    """AprilGrid como la de Kalibr: id 0 abajo a la izquierda, tags girados 180°, y hacia arriba.
+
+    Devuelve: (imagen, A). En la textura la v crece hacia ABAJO y la y del tablero hacia
+    ARRIBA: X = (u - margen) / P,  Y = alto - (v - margen) / P.
+    """
+    diccionario = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    ancho_m, alto_m = tamano_objetivo("aprilgrid")
+    lado_px = round(APRILGRID["lado_tag_m"] * PX_POR_M)
+    img = np.full((round(alto_m * PX_POR_M) + 2 * MARGEN_PX, round(ancho_m * PX_POR_M) + 2 * MARGEN_PX),
+                  255, np.uint8)
+    for id_tag, esquinas in cci.puntos_aprilgrid(APRILGRID["tags_x"], APRILGRID["tags_y"],
+                                                APRILGRID["lado_tag_m"], APRILGRID["espacio_relativo"]).items():
+        tag = cv2.aruco.generateImageMarker(diccionario, id_tag, lado_px, borderBits=APRILGRID["bits_borde"])
+        tag = np.rot90(tag, 2)                                   # Kalibr los dibuja girados 180°
+        x_izq, y_arriba = esquinas[2][0], esquinas[2][1]         # esquina de arriba a la izquierda
+        u = MARGEN_PX + round(x_izq * PX_POR_M)
+        v = MARGEN_PX + round((alto_m - y_arriba) * PX_POR_M)
+        img[v:v + lado_px, u:u + lado_px] = tag
+    A = np.array([[1.0 / PX_POR_M, 0.0, -MARGEN_PX / PX_POR_M],
+                  [0.0, -1.0 / PX_POR_M, alto_m + MARGEN_PX / PX_POR_M],
+                  [0.0, 0.0, 1.0]])
+    return img, A
+
+
+def dibujar_vista(textura, A, R_c_b, t_c_b):
+    """Lo que ve la cámara: homografía de la textura a la imagen, H = K·[r1 r2 t]·A.
+
+    A pasa de píxel de la textura a metros del plano del tablero (Z = 0); K·[r1 r2 t]
+    proyecta ese plano en la imagen.
+    """
     H = K @ np.column_stack([R_c_b[:, 0], R_c_b[:, 1], t_c_b]) @ A
-    vista = cv2.warpPerspective(textura, H, (640, 480), flags=cv2.INTER_LINEAR, borderValue=110)
+    vista = cv2.warpPerspective(textura, H, (640, 480), flags=cv2.INTER_AREA, borderValue=110)
     return cv2.GaussianBlur(vista, (3, 3), 0)
 
 
-def test_de_principio_a_fin_con_imagenes(tmp_path):
+def test_detectar_aprilgrid_en_una_vista_inclinada():
+    textura, A = textura_aprilgrid()
+    R_w_b, p_w_b = tablero_en_el_mundo(0.35, "aprilgrid")
+    R_c_b, t_c_b = postura_verdad(0.4, 0.15, R_w_b, p_w_b)
+    gris = dibujar_vista(textura, A, R_c_b, t_c_b)
+    modelo = cci.puntos_aprilgrid(6, 6, 0.024, 0.3)
+    esquinas, puntos = cci.detectar_aprilgrid(gris, cci.crear_detector_aprilgrid(2), modelo, 4)
+    assert len(esquinas) >= 4 * 25                       # casi todos (alguno cae fuera de la imagen)
+    R, t, error = cci.postura_tablero(esquinas, puntos, K, DIST)
+    assert error < 0.5 and np.degrees(so3.angulo_entre(R, R_c_b)) < 0.2
+    # Con media plantilla tapada, sigue valiendo (el ajedrez necesitaría verse entero)
+    gris[:, :320] = 110
+    esquinas, _ = cci.detectar_aprilgrid(gris, cci.crear_detector_aprilgrid(2), modelo, 4)
+    assert esquinas is not None and 16 <= len(esquinas) < 4 * 25
+    # Con menos de tags_min tags, no
+    assert cci.detectar_aprilgrid(gris, cci.crear_detector_aprilgrid(2), modelo, 36) == (None, None)
+
+
+# =====================================================================
+# De principio a fin: imágenes dibujadas y grabación EuRoC
+# =====================================================================
+@pytest.mark.parametrize("objetivo", ["tablero", "aprilgrid"])
+def test_de_principio_a_fin_con_imagenes(tmp_path, objetivo):
     rng = np.random.default_rng(6)
     duracion_s, amplitud, t_d = 14.0, 0.15, 0.0187
     origen_ns = 10 ** 12                                  # los relojes reales no empiezan en 0
@@ -249,8 +350,8 @@ def test_de_principio_a_fin_con_imagenes(tmp_path):
             f.write(euroc.linea_imu(origen_ns + round(tk * 1e9), wk, [0.0, 0.0, 9.81]))
 
     # 2. Cámara: imagen del tablero en el instante verdadero, sellada t_d antes
-    textura = imagen_tablero()
-    R_w_b, p_w_b = tablero_en_el_mundo(0.4)
+    textura, A = textura_tablero() if objetivo == "tablero" else textura_aprilgrid()
+    R_w_b, p_w_b = tablero_en_el_mundo(0.4, objetivo)
     tau, sellos = instantes_camara(duracion_s, t_d)
     euroc.carpeta_imagenes(tmp_path).mkdir(parents=True)
     with open(euroc.ruta_cam(tmp_path), "w", encoding="utf-8") as f:
@@ -259,14 +360,21 @@ def test_de_principio_a_fin_con_imagenes(tmp_path):
             t_ns = origen_ns + round(sello * 1e9)
             R_c_b, t_c_b = postura_verdad(tk, amplitud, R_w_b, p_w_b)
             cv2.imwrite(str(euroc.carpeta_imagenes(tmp_path) / euroc.nombre_imagen(t_ns)),
-                        dibujar_vista(textura, R_c_b, t_c_b))
+                        dibujar_vista(textura, A, R_c_b, t_c_b))
             f.write(euroc.linea_cam(t_ns, euroc.nombre_imagen(t_ns)))
 
     # 3. La herramienta, como si fuera una grabación de verdad
-    r, cuenta = herramienta.calibrar_grabacion(tmp_path, K, DIST, TABLERO, CFG)
+    cfg_cal = {"camara_imu": dict(CFG, objetivo=objetivo), "tablero": TABLERO, "aprilgrid": APRILGRID}
+    detectar = herramienta.preparar_objetivo(cfg_cal)
+    r, cuenta = herramienta.calibrar_grabacion(tmp_path, K, DIST, detectar, CFG)
     assert cuenta["sin_tablero"] + cuenta["movidas"] + cuenta["reproyeccion"] < 0.05 * cuenta["imagenes"]
     assert r["t_d_s"] * 1000 == pytest.approx(t_d * 1000, abs=0.5)
     assert np.degrees(so3.angulo_entre(r["R_i_c"], R_I_C)) < 0.2
     assert herramienta.motivos_no_valida(r, R_REGLA, dict(CFG, intervalos_min=200)) == []
     herramienta.dibujar(r, tmp_path / "figura.png", "prueba")
     assert (tmp_path / "figura.png").stat().st_size > 10_000
+
+
+def test_objetivo_desconocido_da_un_error_claro():
+    with pytest.raises(ValueError, match="aprilgrid"):
+        herramienta.preparar_objetivo({"camara_imu": {"objetivo": "ajedrez"}})
