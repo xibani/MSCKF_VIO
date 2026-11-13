@@ -58,7 +58,9 @@ camara_imu:                # etapa 7.4: giro cámara-IMU (R_i_c) y desfase t_d c
   factor_descarte: 3.0     # intervalos con residuo > 3 × la mediana: fuera, y se repite
   intervalos_min: 300      # con menos intervalos buenos la grabación no vale (≈ 15 s útiles)
   excitacion_min_dps: 15.0 # desviación típica mínima de la velocidad de giro en CADA eje
-  residuo_max_dps: 5.0     # residuo RMS final mayor: algo no cuadra (aviso)
+  incertidumbre_R_max_deg: 0.3   # incertidumbre máxima (1σ) de R_i_c alrededor de cada eje de la cámara
+  tramos_diagnostico_dps: [30.0, 80.0]   # tramos de rapidez de giro para el diagnóstico de imágenes perdidas
+  residuo_max_dps: 15.0    # residuo RMS final mayor: algo no cuadra (con 1 px de ruido en las esquinas ya sale 10-30)
   angulo_max_regla_deg: 10.0     # más diferencia con la R_i_c de regla: ejes o tablero mal
   dispersion_td_max_ms: 1.0      # varias grabaciones: desviación típica máxima de t_d
   dispersion_R_max_deg: 0.3      # varias grabaciones: separación máxima de la R media

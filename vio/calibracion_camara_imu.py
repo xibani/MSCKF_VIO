@@ -278,6 +278,44 @@ def excitacion(w_c):
     return w_c.std(axis=0)
 
 
+def incertidumbre_giro(w_c, rms_rad_s):
+    """Incertidumbre (desviación típica) de R_i_c alrededor de cada eje de la cámara [rad] (3,).
+
+    Si R_i_c se tuerce un ángulo pequeño δθ (en ejes de la cámara), la predicción R·ω_c
+    cambia en R·(δθ × ω_c): solo se nota con la parte de ω_c PERPENDICULAR a δθ. Sumando
+    sobre los N intervalos (mínimos cuadrados), la información sobre δθ es
+        I = N / σ² · (traza(C)·I₃ - C),     C = covarianza de ω_c (3 x 3)
+    con σ el ruido de cada componente del residuo (σ = rms / √3), y la covarianza de δθ es
+    I⁻¹. Ejemplo: si se gira solo alrededor de z, la parte de I del eje z sale 0 y su
+    incertidumbre, infinita: el giro de la cámara alrededor de ese eje no se puede saber.
+    (Es una aproximación: trata el ruido de la cámara como si fuera del giroscopio.)
+    """
+    centrados = w_c - w_c.mean(axis=0)
+    C = centrados.T @ centrados / len(w_c)
+    sigma2 = rms_rad_s ** 2 / 3.0
+    informacion = len(w_c) / sigma2 * (np.trace(C) * np.eye(3) - C)
+    # Inversa por autovalores (I es simétrica): cov = Σ v·vᵀ / λ. Una dirección con λ ≈ 0
+    # no tiene información: los ejes que tengan parte en ella salen con incertidumbre infinita
+    lambdas, vectores = np.linalg.eigh(informacion)
+    sigma2_ejes = np.zeros(3)
+    for lam, v in zip(lambdas, vectores.T):
+        if lam <= 1e-12 * max(lambdas.max(), 1e-300):
+            sigma2_ejes[np.abs(v) > 1e-6] = np.inf
+        else:
+            sigma2_ejes += v ** 2 / lam
+    return np.sqrt(sigma2_ejes)
+
+
+def velocidad_en_imagenes(t_cam_s, t_imu_s, w_imu):
+    """Rapidez de giro |ω| del giroscopio en el instante de cada imagen [rad/s] (M,).
+
+    Para el diagnóstico: si las imágenes sin tablero son las de giro rápido, la causa es
+    que salen corridas (exposición demasiado larga para esa velocidad).
+    """
+    w = np.column_stack([np.interp(t_cam_s, t_imu_s, w_imu[:, eje]) for eje in range(3)])
+    return np.linalg.norm(w, axis=1)
+
+
 def calibrar_giros(t_cam_s, R_c_b, t_imu_s, w_imu, cfg):
     """R_i_c, b_g y t_d a partir de las posturas del tablero y del giroscopio.
 
@@ -286,8 +324,9 @@ def calibrar_giros(t_cam_s, R_c_b, t_imu_s, w_imu, cfg):
     t_imu_s: (N,) [s]; w_imu: (N, 3) [rad/s] del giroscopio.
     cfg: sección "camara_imu" de config/calibracion.yaml.
     Devuelve: dict con R_i_c, b_g, t_d_s, rms_rad_s, intervalos, descartados, excitacion
-        (3,), curva, y para dibujar: t_medio, w_i (lo que midió el giroscopio) y w_c_en_i
-        (la cámara pasada a ejes de la IMU con R_i_c y b_g).
+        (3,), sigma_R_rad (3,) (incertidumbre del giro alrededor de cada eje de la cámara),
+        curva, y para dibujar: t_medio, w_i (lo que midió el giroscopio en cada intervalo),
+        w_c_en_i (la cámara pasada a ejes de la IMU con R_i_c y b_g), t_imu_s y w_imu.
     """
     t0, t1, w_c = velocidades_camara(t_cam_s, R_c_b, cfg["hueco_max_s"],
                                      np.radians(cfg["velocidad_max_dps"]))
@@ -311,9 +350,11 @@ def calibrar_giros(t_cam_s, R_c_b, t_imu_s, w_imu, cfg):
     w_i = velocidad_media_giroscopio(t_imu_s, Omega, t0[dentro] + t_d, t1[dentro] + t_d)
     return {"R_i_c": R_i_c, "b_g": b_g, "t_d_s": t_d, "rms_rad_s": error,
             "intervalos": int(dentro.sum()), "descartados": int(descartados),
-            "excitacion": excitacion(w_c[dentro]), "curva": curva,
+            "excitacion": excitacion(w_c[dentro]),
+            "sigma_R_rad": incertidumbre_giro(w_c[dentro], error), "curva": curva,
             "t_medio": 0.5 * (t0[dentro] + t1[dentro]), "w_i": w_i,
-            "w_c_en_i": w_c[dentro] @ R_i_c.T + b_g}
+            "w_c_en_i": w_c[dentro] @ R_i_c.T + b_g,
+            "t_imu_s": t_imu_s, "w_imu": w_imu}
 
 
 # =====================================================================

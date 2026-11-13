@@ -335,35 +335,38 @@ def test_detectar_aprilgrid_en_una_vista_inclinada():
 # =====================================================================
 # De principio a fin: imágenes dibujadas y grabación EuRoC
 # =====================================================================
-@pytest.mark.parametrize("objetivo", ["tablero", "aprilgrid"])
-def test_de_principio_a_fin_con_imagenes(tmp_path, objetivo):
-    rng = np.random.default_rng(6)
-    duracion_s, amplitud, t_d = 14.0, 0.15, 0.0187
+def escribir_grabacion_sintetica(carpeta, objetivo, duracion_s, amplitud, t_d, rng):
+    """Grabación EuRoC como la de herramientas.grabar: IMU a 200 Hz e imágenes del tablero
+    dibujadas en el instante verdadero, selladas t_d antes."""
     origen_ns = 10 ** 12                                  # los relojes reales no empiezan en 0
-
     # 1. IMU
     t_imu, w = giroscopio(duracion_s, amplitud, 3.5e-3, rng)
-    euroc.ruta_imu(tmp_path).parent.mkdir(parents=True)
-    with open(euroc.ruta_imu(tmp_path), "w", encoding="utf-8") as f:
+    euroc.ruta_imu(carpeta).parent.mkdir(parents=True)
+    with open(euroc.ruta_imu(carpeta), "w", encoding="utf-8") as f:
         f.write(euroc.CABECERA_IMU)
         for tk, wk in zip(t_imu, w):
             f.write(euroc.linea_imu(origen_ns + round(tk * 1e9), wk, [0.0, 0.0, 9.81]))
-
-    # 2. Cámara: imagen del tablero en el instante verdadero, sellada t_d antes
+    # 2. Cámara
     textura, A = textura_tablero() if objetivo == "tablero" else textura_aprilgrid()
     R_w_b, p_w_b = tablero_en_el_mundo(0.4, objetivo)
     tau, sellos = instantes_camara(duracion_s, t_d)
-    euroc.carpeta_imagenes(tmp_path).mkdir(parents=True)
-    with open(euroc.ruta_cam(tmp_path), "w", encoding="utf-8") as f:
+    euroc.carpeta_imagenes(carpeta).mkdir(parents=True)
+    with open(euroc.ruta_cam(carpeta), "w", encoding="utf-8") as f:
         f.write(euroc.CABECERA_CAM)
         for tk, sello in zip(tau, sellos):
             t_ns = origen_ns + round(sello * 1e9)
             R_c_b, t_c_b = postura_verdad(tk, amplitud, R_w_b, p_w_b)
-            cv2.imwrite(str(euroc.carpeta_imagenes(tmp_path) / euroc.nombre_imagen(t_ns)),
+            cv2.imwrite(str(euroc.carpeta_imagenes(carpeta) / euroc.nombre_imagen(t_ns)),
                         dibujar_vista(textura, A, R_c_b, t_c_b))
             f.write(euroc.linea_cam(t_ns, euroc.nombre_imagen(t_ns)))
 
-    # 3. La herramienta, como si fuera una grabación de verdad
+
+@pytest.mark.parametrize("objetivo", ["tablero", "aprilgrid"])
+def test_de_principio_a_fin_con_imagenes(tmp_path, objetivo):
+    t_d = 0.0187
+    escribir_grabacion_sintetica(tmp_path, objetivo, 14.0, 0.15, t_d, np.random.default_rng(6))
+
+    # La herramienta, como si fuera una grabación de verdad
     cfg_cal = {"camara_imu": dict(CFG, objetivo=objetivo), "tablero": TABLERO, "aprilgrid": APRILGRID}
     detectar = herramienta.preparar_objetivo(cfg_cal)
     r, cuenta = herramienta.calibrar_grabacion(tmp_path, K, DIST, detectar, CFG)
@@ -371,8 +374,44 @@ def test_de_principio_a_fin_con_imagenes(tmp_path, objetivo):
     assert r["t_d_s"] * 1000 == pytest.approx(t_d * 1000, abs=0.5)
     assert np.degrees(so3.angulo_entre(r["R_i_c"], R_I_C)) < 0.2
     assert herramienta.motivos_no_valida(r, R_REGLA, dict(CFG, intervalos_min=200)) == []
-    herramienta.dibujar(r, tmp_path / "figura.png", "prueba")
+    assert np.all(np.degrees(r["sigma_R_rad"]) < 0.1)
+    herramienta.imprimir_diagnostico(tmp_path, cuenta, CFG)
+    herramienta.dibujar(r, tmp_path / "figura.png", "prueba", cuenta["por_imagen"])
     assert (tmp_path / "figura.png").stat().st_size > 10_000
+
+
+# =====================================================================
+# Incertidumbre del giro y diagnóstico
+# =====================================================================
+@pytest.mark.parametrize("escala", [(1.0, 1.0, 1.0), (0.15, 0.15, 1.0)])
+def test_incertidumbre_giro_coincide_con_la_dispersion_real(escala):
+    # Se repite muchas veces el ajuste con ruido distinto: la dispersión real del giro
+    # estimado tiene que parecerse a la que predice la fórmula. Con el giro casi todo
+    # alrededor de z (escala 0,15 en x e y), el giro alrededor de z se sabe mucho peor
+    rng = np.random.default_rng(9)
+    errores, sigma = [], None
+    for _ in range(150):
+        w_c = rng.normal(0.0, np.radians(40), (400, 3)) * np.array(escala)
+        w_i = w_c @ R_I_C.T + rng.normal(0.0, np.radians(10) / np.sqrt(3), (400, 3))
+        R, _, residuos = cci.alinear_giros(w_c, w_i)
+        errores.append(so3.log_so3(R_I_C.T @ R))           # error en ejes de la cámara
+        sigma = cci.incertidumbre_giro(w_c, cci.rms(residuos))
+    real = np.std(errores, axis=0)
+    assert np.allclose(real, sigma, rtol=0.25)
+    if escala[0] < 1:
+        assert sigma[2] > 3 * sigma[0]
+
+
+def test_incertidumbre_infinita_si_solo_se_gira_en_un_eje():
+    w_c = np.column_stack([np.zeros(100), np.zeros(100), np.linspace(-1, 1, 100)])
+    sigma = cci.incertidumbre_giro(w_c, 0.01)
+    assert np.isinf(sigma[2]) and np.all(np.isfinite(sigma[:2]))
+
+
+def test_velocidad_en_imagenes():
+    t_imu = np.arange(0.0, 1.0, 0.005)
+    w = np.column_stack([np.full_like(t_imu, 3.0), np.full_like(t_imu, 4.0), np.zeros_like(t_imu)])
+    assert np.allclose(cci.velocidad_en_imagenes(np.array([0.1, 0.5]), t_imu, w), 5.0)
 
 
 def test_objetivo_desconocido_da_un_error_claro():

@@ -12,6 +12,7 @@ Guarda una figura calibracion_camara_imu.png dentro de cada grabación.
 """
 
 import argparse
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -68,11 +69,15 @@ def posturas_grabacion(carpeta, K, dist, detectar, cfg):
 
     detectar: función de preparar_objetivo.
     Devuelve: (t_ns (M,) int64, R_c_b lista de M (3, 3), cuenta) con solo las imágenes
-        válidas. cuenta: dict con cuántas imágenes había y por qué se descartó cada una.
+        válidas. cuenta: dict con cuántas imágenes había, por qué se descartó cada una y,
+        en cuenta["por_imagen"], para TODAS las imágenes: t_ns, esquinas detectadas (0 si
+        ninguna) y valida (bool), para el diagnóstico.
     """
     t_ns, nombres = euroc.leer_cam(euroc.ruta_cam(carpeta))
     carpeta_png = euroc.carpeta_imagenes(carpeta)
     cuenta = {"imagenes": len(nombres), "movidas": 0, "sin_tablero": 0, "reproyeccion": 0}
+    n_esquinas = np.zeros(len(nombres), dtype=int)
+    valida = np.zeros(len(nombres), dtype=bool)
     t_validas, R_validas = [], []
     for k, (t, nombre) in enumerate(zip(t_ns, nombres)):
         if k % AVISO_CADA_IMAGENES == 0:
@@ -85,12 +90,15 @@ def posturas_grabacion(carpeta, K, dist, detectar, cfg):
         if esquinas is None:
             cuenta["sin_tablero"] += 1
             continue
+        n_esquinas[k] = len(esquinas)
         R_c_b, _, error = cci.postura_tablero(esquinas, puntos_3d, K, dist)
         if R_c_b is None or error > cfg["reproyeccion_max_px"]:
             cuenta["reproyeccion"] += 1
             continue
+        valida[k] = True
         t_validas.append(int(t))
         R_validas.append(R_c_b)
+    cuenta["por_imagen"] = {"t_ns": t_ns, "esquinas": n_esquinas, "valida": valida}
     return np.array(t_validas, dtype=np.int64), R_validas, cuenta
 
 
@@ -98,12 +106,17 @@ def calibrar_grabacion(carpeta, K, dist, detectar, cfg):
     """Calibra con una grabación. Devuelve: (resultado de cci.calibrar_giros o None, cuenta)."""
     t_cam_ns, R_c_b, cuenta = posturas_grabacion(carpeta, K, dist, detectar, cfg)
     t_imu_ns, w, _ = euroc.leer_imu(euroc.ruta_imu(carpeta))
-    if len(t_cam_ns) < 3:
-        return None, cuenta
     # Origen de tiempos común: la primera muestra de la IMU (en segundos, sin perder precisión)
     origen = t_imu_ns[0]
     t_imu_s = (t_imu_ns - origen) / 1e9
     t_cam_s = (t_cam_ns - origen) / 1e9
+    # Diagnóstico: el instante y la rapidez de giro de CADA imagen (también las descartadas)
+    por_imagen = cuenta["por_imagen"]
+    por_imagen["t_s"] = (por_imagen["t_ns"] - origen) / 1e9
+    por_imagen["giro_rad_s"] = cci.velocidad_en_imagenes(por_imagen["t_s"], t_imu_s, w)
+    por_imagen["t_imu_s"], por_imagen["w_imu"] = t_imu_s, w
+    if len(t_cam_ns) < 3:
+        return None, cuenta
     return cci.calibrar_giros(t_cam_s, R_c_b, t_imu_s, w, cfg), cuenta
 
 
@@ -120,6 +133,11 @@ def motivos_no_valida(r, R_regla, cfg):
         if s < cfg["excitacion_min_dps"]:
             motivos.append(f"poco giro alrededor del eje {eje} de la cámara ({s:.1f} °/s, "
                            f"mín. {cfg['excitacion_min_dps']})")
+    for eje, sigma in zip("xyz", np.degrees(r["sigma_R_rad"])):
+        if sigma > cfg["incertidumbre_R_max_deg"]:
+            motivos.append(f"el giro alrededor del eje {eje} de la cámara solo se sabe con ±{sigma:.2f}° "
+                           f"(máx. {cfg['incertidumbre_R_max_deg']}°): gira más alrededor de los OTROS "
+                           "dos ejes, o con menos ruido")
     if np.degrees(r["rms_rad_s"]) > cfg["residuo_max_dps"]:
         motivos.append(f"residuo {np.degrees(r['rms_rad_s']):.2f} °/s (máx. {cfg['residuo_max_dps']}): "
                        "cámara y giroscopio no cuadran")
@@ -142,25 +160,78 @@ def imprimir_resultado(r, R_regla):
     print(f"  residuo RMS = {np.degrees(r['rms_rad_s']):.2f} °/s con {r['intervalos']} intervalos "
           f"({r['descartados']} descartados)")
     print(f"  giro en cada eje de la cámara (desv. típica): {np.degrees(r['excitacion']).round(1)} °/s")
+    sigma = np.degrees(r["sigma_R_rad"])
+    print(f"  incertidumbre del giro R_i_c (alrededor de x, y, z de la cámara): "
+          f"±{sigma[0]:.2f}°, ±{sigma[1]:.2f}°, ±{sigma[2]:.2f}°")
 
 
-def dibujar(r, ruta_png, titulo):
-    """Curva del coste frente a t_d y las velocidades de cámara y giroscopio superpuestas."""
-    fig, ejes = plt.subplots(4, 1, figsize=(12, 12))
-    candidatos, costes = r["curva"]
-    ejes[0].plot(candidatos * 1000, np.degrees(costes))
-    ejes[0].axvline(r["t_d_s"] * 1000, color="r", ls="--", label=f"t_d = {r['t_d_s'] * 1000:+.2f} ms")
-    ejes[0].set_xlabel("t_d de prueba [ms]")
-    ejes[0].set_ylabel("residuo RMS [°/s]")
+def imprimir_diagnostico(carpeta, cuenta, cfg):
+    """¿Por qué se pierden imágenes? Compara la rapidez de giro de las imágenes con y sin tablero.
+
+    Si las perdidas son las de giro rápido, salen corridas (la exposición es larga para esa
+    velocidad). Si se pierden también girando despacio, el tablero se salía de la imagen o
+    estaba lejos o mal iluminado.
+    """
+    ruta_meta = Path(carpeta) / "meta.json"
+    if ruta_meta.exists():
+        with open(ruta_meta, encoding="utf-8") as f:
+            fijada = json.load(f).get("exposicion_fijada") or {}
+        if "exposicion_us" in fijada:
+            print(f"  exposición fija de la grabación: {fijada['exposicion_us']} us")
+    p = cuenta["por_imagen"]
+    giro = np.degrees(p["giro_rad_s"])
+    con = p["esquinas"] > 0
+    if con.any() and (~con).any():
+        print(f"  rapidez de giro (mediana): imágenes CON tablero {np.median(giro[con]):.0f} °/s | "
+              f"SIN tablero {np.median(giro[~con]):.0f} °/s")
+    tramos = cfg["tramos_diagnostico_dps"]
+    textos = []
+    for desde, hasta in zip([0.0] + tramos, tramos + [np.inf]):
+        en_tramo = (giro >= desde) & (giro < hasta)
+        if en_tramo.any():
+            nombre = f"<{hasta:.0f}" if desde == 0 else (f">{desde:.0f}" if hasta == np.inf else f"{desde:.0f}-{hasta:.0f}")
+            textos.append(f"{nombre} °/s: {100 * con[en_tramo].mean():.0f} % de {en_tramo.sum()}")
+    print("  tablero encontrado según la rapidez de giro: " + " | ".join(textos))
+
+
+def dibujar(r, ruta_png, titulo, por_imagen=None):
+    """Figura de la calibración (si r no es None) y del diagnóstico (si hay por_imagen).
+
+    - Coste frente a t_d: debe tener UN valle claro.
+    - ω en los tres ejes de la IMU: giroscopio completo (línea, ya desplazado t_d) y la
+      cámara pasada a ejes de la IMU (puntos): los puntos deben caer sobre la línea.
+    - Diagnóstico: rapidez de giro del giroscopio y cada imagen encima, verde si se
+      encontró el tablero y roja si no.
+    """
+    paneles = (4 if r is not None else 0) + (1 if por_imagen is not None else 0)
+    fig, ejes = plt.subplots(paneles, 1, figsize=(12, 3 * paneles), squeeze=False)
+    ejes = ejes[:, 0]
+    if r is not None:
+        candidatos, costes = r["curva"]
+        ejes[0].plot(candidatos * 1000, np.degrees(costes))
+        ejes[0].axvline(r["t_d_s"] * 1000, color="r", ls="--", label=f"t_d = {r['t_d_s'] * 1000:+.2f} ms")
+        ejes[0].set_xlabel("t_d de prueba [ms]")
+        ejes[0].set_ylabel("residuo RMS [°/s]")
+        ejes[0].legend()
+        t_gir = r["t_imu_s"] - r["t_d_s"]               # el giroscopio en el reloj de la cámara
+        for eje in range(3):
+            ejes[eje + 1].plot(t_gir, np.degrees(r["w_imu"][:, eje]), lw=0.6, label="giroscopio")
+            ejes[eje + 1].plot(r["t_medio"], np.degrees(r["w_c_en_i"][:, eje]), ".", ms=3,
+                               label="cámara (pasada a ejes de la IMU)")
+            ejes[eje + 1].set_ylabel(f"ω_{'xyz'[eje]} IMU [°/s]")
+            ejes[eje + 1].legend(loc="upper right")
+    if por_imagen is not None:
+        ax = ejes[-1]
+        ax.plot(por_imagen["t_imu_s"], np.degrees(np.linalg.norm(por_imagen["w_imu"], axis=1)),
+                color="0.6", lw=0.6, label="|ω| giroscopio")
+        con = por_imagen["esquinas"] > 0
+        giro = np.degrees(por_imagen["giro_rad_s"])
+        ax.plot(por_imagen["t_s"][con], giro[con], "g.", ms=3, label="imagen con tablero")
+        ax.plot(por_imagen["t_s"][~con], giro[~con], "r.", ms=3, label="imagen SIN tablero")
+        ax.set_ylabel("rapidez de giro [°/s]")
+        ax.legend(loc="upper right")
+    ejes[-1].set_xlabel("tiempo desde el inicio de la IMU [s]")
     ejes[0].set_title(titulo)
-    ejes[0].legend()
-    for eje in range(3):
-        ejes[eje + 1].plot(r["t_medio"], np.degrees(r["w_i"][:, eje]), lw=1, label="giroscopio")
-        ejes[eje + 1].plot(r["t_medio"], np.degrees(r["w_c_en_i"][:, eje]), ".", ms=2,
-                           label="cámara (pasada a ejes de la IMU)")
-        ejes[eje + 1].set_ylabel(f"ω_{'xyz'[eje]} IMU [°/s]")
-        ejes[eje + 1].legend(loc="upper right")
-    ejes[3].set_xlabel("tiempo desde el inicio de la IMU [s]")
     fig.tight_layout()
     fig.savefig(ruta_png, dpi=90)
     plt.close(fig)
@@ -190,13 +261,14 @@ def main():
         r, cuenta = calibrar_grabacion(carpeta, K, dist, detectar, cfg)
         print(f"  imágenes: {cuenta['imagenes']} | movidas {cuenta['movidas']} | sin tablero "
               f"{cuenta['sin_tablero']} | con mucho error {cuenta['reproyeccion']}")
+        imprimir_diagnostico(carpeta, cuenta, cfg)
+        dibujar(r, carpeta / "calibracion_camara_imu.png", str(carpeta.name), cuenta["por_imagen"])
+        print(f"  figura: {carpeta / 'calibracion_camara_imu.png'}")
         if r is None:
             print(f"  NO VALE: casi ninguna imagen con el tablero (¿es el de camara_imu.objetivo = "
                   f"{cfg['objetivo']}?)")
             continue
         imprimir_resultado(r, R_regla)
-        dibujar(r, carpeta / "calibracion_camara_imu.png", str(carpeta.name))
-        print(f"  figura: {carpeta / 'calibracion_camara_imu.png'}")
         motivos = motivos_no_valida(r, R_regla, cfg)
         for motivo in motivos:
             print(f"  NO VALE: {motivo}")
