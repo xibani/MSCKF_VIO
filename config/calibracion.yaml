@@ -35,3 +35,20 @@ allan:                     # etapa 7.3: ruido de la IMU por varianza de Allan
   factor_kalibr: 10.0      # el wiki de Kalibr recomienda ~×10 en IMU MEMS baratas
   referencia_ruido_gir: 8.7e-5   # hoja de datos de la MPU-6050 [rad/s/√Hz], para comparar
   referencia_ruido_acc: 3.9e-3   # hoja de datos [m/s²/√Hz] (400 µg/√Hz)
+
+camara_imu:                # etapa 7.4: giro cámara-IMU (R_i_c) y desfase t_d con el giroscopio
+  nitidez_min: 30.0        # imágenes más movidas se descartan (en movimiento baja de 100)
+  reproyeccion_max_px: 1.5 # postura del tablero con más error que esto: imagen descartada
+  hueco_max_s: 0.08        # imágenes válidas más separadas no dan velocidad (a 20 fps: 0,05 s)
+  velocidad_max_dps: 400.0 # intervalos más rápidos: salto falso (tablero detectado al revés)
+  desfase_max_ms: 100.0    # t_d se busca entre -100 y +100 ms
+  paso_grueso_ms: 1.0      # paso del primer barrido
+  paso_fino_ms: 0.05       # paso del segundo barrido, alrededor del mejor
+  margen_fino_ms: 2.0      # el segundo barrido cubre ±2 ms alrededor del mejor
+  factor_descarte: 3.0     # intervalos con residuo > 3 × la mediana: fuera, y se repite
+  intervalos_min: 300      # con menos intervalos buenos la grabación no vale (≈ 15 s útiles)
+  excitacion_min_dps: 15.0 # desviación típica mínima de la velocidad de giro en CADA eje
+  residuo_max_dps: 5.0     # residuo RMS final mayor: algo no cuadra (aviso)
+  angulo_max_regla_deg: 10.0     # más diferencia con la R_i_c de regla: ejes o tablero mal
+  dispersion_td_max_ms: 1.0      # varias grabaciones: desviación típica máxima de t_d
+  dispersion_R_max_deg: 0.3      # varias grabaciones: separación máxima de la R media
