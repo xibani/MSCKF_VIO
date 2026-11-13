@@ -22,6 +22,9 @@ Etapa 18: los puntos del mapa y los keyframes de mapeo se guardan en mapa.paquet
 IP del PC (--ip-mapa, o mapeo.ip_pc en config/vio.yaml), se envían a apps/pc_mapa (UDP 5008).
 Etapa 19: cada "Nueva prueba" empieza también un mapa nuevo (mapa_2.paquetes, _3...) y avisa
 al PC, porque el VIO reiniciado tiene otro origen y vuelve a numerar los puntos desde 0.
+Etapa 22: con --frontend lightglue las pistas las hacen SuperPoint + LightGlue en lugar de
+FAST + Lucas-Kanade. Solo en el PC (necesita PyTorch) y pensado para grabaciones:
+    python -m apps.pi_vio --grabacion datos/sim_textura --sin-red --frontend lightglue
 La trayectoria estimada se guarda en vio_trayectoria.csv (dentro de la grabación, o en
 datos/vio_AAAAMMDD_HHMMSS/ en vivo).
 """
@@ -328,6 +331,12 @@ def main():
         default=cargar_config("vio")["control"]["puerto"],
         help="puerto UDP de las órdenes del visor (0: ninguno)",
     )
+    parser.add_argument(
+        "--frontend",
+        choices=("klt", "lightglue"),
+        default="klt",
+        help="klt: FAST + Lucas-Kanade; lightglue: SuperPoint + LightGlue (solo en el PC)",
+    )
     args = parser.parse_args()
 
     terminar_con_sigterm()
@@ -353,9 +362,24 @@ def main():
         ruta_config("imu_calibracion"), args.sin_calibracion_acc
     )
 
+    # Etapa 22: las redes se cargan una sola vez, aunque el VIO se reinicie varias veces
+    emparejador = None
+    if args.frontend == "lightglue":
+        from vio.emparejador import EmparejadorLightGlue
+        from vio.frontend_lightglue import FrontEndLightGlue
+
+        cfg_lightglue = cargar_config("lightglue")
+        emparejador = EmparejadorLightGlue(cfg_lightglue)
+        print(f"Front-end SuperPoint + LightGlue, redes cargadas en: {emparejador.dispositivo}")
+
     def pipeline_nuevo():
         """El VIO desde cero (al arrancar y en cada "Nueva prueba" del visor)."""
-        return PipelineVio(K, dist, R_c_i, t_c_i, ext["t_d_ns"], cfgs, calib_acc)
+        frontend = None  # None: PipelineVio crea el de siempre, FAST + Lucas-Kanade
+        if emparejador is not None:
+            frontend = FrontEndLightGlue(K, dist, cfg_lightglue, emparejador)
+        return PipelineVio(
+            K, dist, R_c_i, t_c_i, ext["t_d_ns"], cfgs, calib_acc, frontend
+        )
 
     pipeline = pipeline_nuevo()
 

@@ -3,11 +3,14 @@ herramientas/ver_pistas.py — Pasa el front-end por una grabación y dibuja las
 
 Uso, desde ~/svo-pi:
     python -m herramientas.ver_pistas datos/20261102_183000
+    python -m herramientas.ver_pistas datos/sim_textura --frontend lightglue    # etapa 22, en el PC
 Vale cualquier grabación con mav0/cam0 (las de grabar y las de grabar_camara).
 Guarda en la carpeta de la grabación:
     pistas.mp4          vídeo con las pistas dibujadas
     pistas_NNNN.png     algunas imágenes sueltas, por si el vídeo no se puede abrir
     frontend.png        estadísticas por imagen e histograma de longitudes de pista
+Con --frontend lightglue los nombres llevan "_lightglue" (pistas_lightglue.mp4...), para
+poder comparar los dos front-ends sobre la misma grabación.
 """
 
 import argparse
@@ -24,6 +27,7 @@ from captura import euroc
 from vio import modelo_camara as mc
 from vio.config import cargar_config
 from vio.frontend import FrontEnd
+from vio.frontend_lightglue import FrontEndLightGlue
 
 COLA_DIBUJO = 10            # últimas posiciones de cada pista que se dibujan
 CADA_N_INSTANTANEA = 100    # cada cuántas imágenes se guarda un PNG suelto
@@ -45,11 +49,19 @@ def dibujar(gris, frontend):
 def main():
     parser = argparse.ArgumentParser(description="Dibuja las pistas del front-end")
     parser.add_argument("carpeta", help="carpeta de la grabación (la que contiene mav0/)")
+    parser.add_argument("--frontend", choices=("klt", "lightglue"), default="klt",
+                        help="klt: FAST + Lucas-Kanade (etapa 8); lightglue: SuperPoint + LightGlue (etapa 22)")
     args = parser.parse_args()
     carpeta = Path(args.carpeta)
 
     K, dist, _ = mc.cargar_intrinsecos()
-    frontend = FrontEnd(K, dist, cargar_config("frontend"))
+    if args.frontend == "lightglue":
+        frontend = FrontEndLightGlue(K, dist, cargar_config("lightglue"))
+        print(f"Redes cargadas en: {frontend.emparejador.dispositivo}")
+        sufijo = "_lightglue"
+    else:
+        frontend = FrontEnd(K, dist, cargar_config("frontend"))
+        sufijo = ""
     t_ns, nombres = euroc.leer_cam(euroc.ruta_cam(carpeta))
     carpeta_png = euroc.carpeta_imagenes(carpeta)
     fps = cargar_config("camara")["fps"]
@@ -71,14 +83,14 @@ def main():
         # 2. Dibujo
         vista = dibujar(gris, frontend)
         if video is None:
-            video = cv2.VideoWriter(str(carpeta / "pistas.mp4"), cv2.VideoWriter_fourcc(*"mp4v"),
+            video = cv2.VideoWriter(str(carpeta / f"pistas{sufijo}.mp4"), cv2.VideoWriter_fourcc(*"mp4v"),
                                     fps, (gris.shape[1], gris.shape[0]))
             if not video.isOpened():
                 print("AVISO: no se puede escribir el vídeo; solo se guardarán PNG sueltos")
         if video.isOpened():
             video.write(vista)
         if k % CADA_N_INSTANTANEA == 0:
-            cv2.imwrite(str(carpeta / f"pistas_{k:04d}.png"), vista)
+            cv2.imwrite(str(carpeta / f"pistas{sufijo}_{k:04d}.png"), vista)
     if video is not None:
         video.release()
     terminadas += frontend.terminar_todas()
@@ -91,8 +103,16 @@ def main():
     print(f"pistas: {len(longitudes)} | longitud media {longitudes.mean():.1f} imágenes"
           f" | mediana {np.median(longitudes):.0f} | máxima {longitudes.max()}")
     print(f"pistas de 3 imágenes o más (las útiles para el filtro): {(longitudes >= 3).sum()}")
-    print(f"perdidos por Lucas-Kanade: {sum(e['perdidos_klt'] for e in estadisticas)}"
-          f" | rechazados por RANSAC: {sum(e['rechazados_ransac'] for e in estadisticas)}")
+    if args.frontend == "lightglue":
+        print(f"sin pareja: {sum(e['sin_pareja'] for e in estadisticas)}"
+              f" | con poca confianza: {sum(e['poca_confianza'] for e in estadisticas)}"
+              f" | rechazados por RANSAC: {sum(e['rechazados_ransac'] for e in estadisticas)}")
+        # La mediana, y no la media: la primera imagen tarda mucho más (las redes se preparan)
+        print(f"redes: SuperPoint {np.median([e['t_extraer_ms'] for e in estadisticas]):.1f} ms por imagen,"
+              f" LightGlue {np.median([e['t_emparejar_ms'] for e in estadisticas]):.1f} ms por pareja (medianas)")
+    else:
+        print(f"perdidos por Lucas-Kanade: {sum(e['perdidos_klt'] for e in estadisticas)}"
+              f" | rechazados por RANSAC: {sum(e['rechazados_ransac'] for e in estadisticas)}")
     print(f"tiempo del front-end: media {np.mean(tiempos_ms):.1f} ms, "
           f"máximo {np.max(tiempos_ms):.1f} ms por imagen")
 
@@ -110,8 +130,8 @@ def main():
     ejes[1].set_yscale("log")
     ejes[1].set_title("Longitud de las pistas")
     fig.tight_layout()
-    fig.savefig(carpeta / "frontend.png", dpi=100)
-    print(f"Resultados en {carpeta}: pistas.mp4, pistas_*.png, frontend.png")
+    fig.savefig(carpeta / f"frontend{sufijo}.png", dpi=100)
+    print(f"Resultados en {carpeta}: pistas{sufijo}.mp4, pistas{sufijo}_*.png, frontend{sufijo}.png")
 
 
 if __name__ == "__main__":

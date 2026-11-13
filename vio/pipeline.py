@@ -54,17 +54,21 @@ def leer_poses(ruta):
 class PipelineVio:
     """Inicialización + front-end + MSCKF, alimentado muestra a muestra e imagen a imagen."""
 
-    def __init__(self, K, dist, R_c_i, t_c_i, t_d_ns, cfgs, calib_acc=None):
+    def __init__(self, K, dist, R_c_i, t_c_i, t_d_ns, cfgs, calib_acc=None, frontend=None):
         """K, dist: intrínsecos. R_c_i, t_c_i: extrínseca T_c_i. t_d_ns: desfase de Kalibr.
         cfgs: dict con los dicts de config "vio", "frontend", "msckf" y "triangulacion".
         calib_acc: (sesgo (3,), escala (3,)) del acelerómetro (etapa 7.2), o None para
             usar la medida tal cual.
+        frontend: el front-end ya creado (etapa 22: FrontEndLIghtGlue), o None para el de
+            siempre, FAST + Lucas-Kanade (etapa 8).
         """
         self.K, self.dist = K, dist
         self.R_c_i, self.t_c_i = R_c_i, t_c_i
         self.t_d_ns = int(t_d_ns)
         self.cfgs = cfgs
-        self.frontend = FrontEnd(K, dist, cfgs["frontend"])
+        if frontend is None:
+            self.frontend = FrontEnd(K, dist, cfgs["frontend"])
+        self.frontend = frontend
         self.filtro = None
         self.reposo = []  # muestras (t, w, a) mientras se inicializa
         self.pendientes = []  # muestras recibidas que aún no ha usado el filtro

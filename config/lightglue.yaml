@@ -16,3 +16,21 @@ lightglue:
 evaluacion:                   # solo con imágenes del simulador, donde se sabe la verdad
   umbral_correcta_px: 3.0     # una pareja es correcta si el error es menor que esto
   instantes_s: [4.0, 4.5]     # los dos instantes de la trayectoria que se comparan por defecto
+
+# ---------------------------------------------------------------------
+# Etapa 22 — De parejas a pistas (vio/frontend_lightglue.py)
+# ---------------------------------------------------------------------
+pistas:
+  umbral_confianza: 0.5       # una pareja con menos confianza no continúa una pista (valor de partida)
+  margen_borde_px: 10         # no se empiezan pistas a menos de esto del borde
+  celdas_x: 8                 # reparto de las pistas nuevas: los mismos valores que FAST (frontend.yaml)
+  celdas_y: 6
+  max_por_celda: 3            # como mucho 3 pistas nuevas por celda
+  max_puntos: 150             # pistas vivas a la vez, en total
+  distancia_min_px: 15        # una pista nueva no empieza más cerca de otro punto seguido
+
+geometria:                    # el RANSAC de la etapa 8, con el umbral adaptado a SuperPoint
+  umbral_px: 2.0              # SuperPoint da píxeles enteros: más margen que el 1.0 de Lucas-Kanade
+  confianza: 0.999
+  paralaje_min_px: 1.0
+  puntos_min: 8
