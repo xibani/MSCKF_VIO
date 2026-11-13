@@ -6,6 +6,8 @@ o los sensores en vivo): el código del filtro es el mismo en los dos casos.
     1. Mientras no hay filtro: se acumulan muestras de IMU en reposo (etapa 5.1).
     2. Con t_reposo_s acumulados: sesgo del giroscopio e inclinación -> se crea el MSCKF.
     3. Cada imagen: IMU hasta su instante, seguimiento de puntos (etapa 8), MSCKF (etapa 12).
+       Etapa 23: al front-end que lo admita se le da además el giro de la cámara desde la
+       imagen anterior, medido por el giroscopio.
     4. Etapa 18: puntos para el mapa disperso y, cuando un clon sale de la ventana del
        filtro, quizá un keyframe de mapeo (vio/mapeo.py).
 """
@@ -51,6 +53,19 @@ def leer_poses(ruta):
     )
 
 
+def giro_camara(R_w_i_ant, R_w_i_act, R_c_i):
+    """Etapa 23: giro de la CÁMARA entre dos instantes, a partir de la orientación de la IMU.
+
+    R_w_i_ant, R_w_i_act: (3, 3) orientación de la IMU en la imagen anterior y en la actual.
+    R_c_i: (3, 3) de la extrínseca (ejes de la IMU -> ejes de la cámara).
+    Una dirección d en los ejes de la cámara anterior se lleva a los de la cámara actual en
+    cuatro pasos: cámara anterior -> IMU anterior (R_c_iᵀ) -> mundo (R_w_i_ant) -> IMU actual
+    (R_w_i_actᵀ) -> cámara actual (R_c_i).
+    Devuelve: (3, 3) R_act_ant, con d_act = R_act_ant · d_ant.
+    """
+    return R_c_i @ R_w_i_act.T @ R_w_i_ant @ R_c_i.T
+
+
 class PipelineVio:
     """Inicialización + front-end + MSCKF, alimentado muestra a muestra e imagen a imagen."""
 
@@ -75,6 +90,7 @@ class PipelineVio:
         self.problemas = []  # por qué falló el último intento de inicializar
         self.intentos = 0
         self.uv_anterior = {}  # id -> posición [px] de cada punto en la imagen anterior
+        self.R_w_i_ant = None  # etapa 23: orientación de la IMU en la imagen anterior
         self.calib_acc = calib_acc
         self.descartadas = 0  # imágenes anteriores al estado del filtro (relojes mal)
         # Etapa 18: la imagen de cada clon mientras esté en la ventana (número de imagen -> gris),
@@ -175,6 +191,7 @@ class PipelineVio:
         Devuelve: None si el filtro aún no está listo, o un dict con t_ns, R_w_i, p_w, v_w,
         los recuentos del front-end y del MSCKF, los tiempos de cada parte [ms] y, para el
         mapa (etapa 17): puntos_mapa (ids (N,), p_w (N, 3)) y keyframe (KeyframeMapeo o None).
+        Etapa 23: pistas_terminadas, las Pista que el front-end da por acabadas en esta imagen.
         """
         if self.filtro is None:
             return None
@@ -188,10 +205,20 @@ class PipelineVio:
         while self.pendientes and self.pendientes[0][0] <= t_ns:
             t_k, w_k, a_k = self.pendientes.pop(0)
             self.filtro.anadir_imu(t_k, w_k, a_k)
+        # Etapa 23: llevar ya el filtro al instante de la imagen (procesar_imagen lo haría
+        # igual, más abajo) para saber cuánto ha girado la cámara desde la imagen anterior.
+        # De una imagen a la siguiente la orientación solo cambia integrando el giroscopio
+        self.filtro.propagar_hasta(t_ns)
+        R_act_ant = None
+        if self.R_w_i_ant is not None:
+            R_act_ant = giro_camara(self.R_w_i_ant, self.filtro.estado.R_w_i, self.R_c_i)
         t1 = time.perf_counter_ns()
 
         # 2. Seguimiento de puntos (etapa 8): ids y posiciones de los puntos vistos ahora
-        res_fe = self.frontend.procesar(gris, t_ns)
+        if getattr(self.frontend, "usa_giro", False):
+            res_fe = self.frontend.procesar(gris, t_ns, R_act_ant)
+        else:
+            res_fe = self.frontend.procesar(gris, t_ns)
         ids = self.frontend.ids
         xy = (
             mc.normalizar(self.frontend.puntos, self.K, self.dist)
@@ -222,12 +249,14 @@ class PipelineVio:
         t3 = time.perf_counter_ns()
 
         e = self.filtro.estado
+        self.R_w_i_ant = e.R_w_i.copy()  # etapa 23: ya corregida con esta imagen
         return {
             "t_ns": t_ns,
             "R_w_i": e.R_w_i.copy(),
             "p_w": e.p_w.copy(),
             "v_w": e.v_w.copy(),
             "frontend": res_fe["estadisticas"],
+            "pistas_terminadas": res_fe["terminadas"],
             "msckf": est,
             "puntos_mapa": puntos_mapa,
             "keyframe": keyframe,

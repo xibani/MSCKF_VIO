@@ -15,7 +15,8 @@ Por cada imagen nueva:
     2. LightGlue: parejas entre los puntos de la imagen ANTERIOR y los de esta.
     3. Cada pista recuerda qué punto de la imagen anterior era el suyo. Si ese punto tiene
        pareja, con confianza suficiente, la pista continúa en la pareja. Si no, termina.
-    4. Rechazo geométrico: el mismo RANSAC con la matriz esencial de la etapa 8.
+    4. Rechazo geométrico: el RANSAC con la matriz esencial de la etapa 8 o, si el pipeline
+       da el giro de la cámara medido por el giroscopio, el de 2 puntos de la etapa 23.
     5. Pistas nuevas con los puntos que no ha usado ninguna pista, repartidos por la imagen.
 
 Este archivo no importa PyTorch: las redes están detrás de EmparejadorLightGlue, que solo lo
@@ -116,10 +117,71 @@ def elegir_nuevos(candidatos, puntuaciones, existentes, cfg_pistas, tamano):
 
 
 # =====================================================================
+# Paso 23.2 — Rechazo geométrico con el giro que da el giroscopio (RANSAC de 2 puntos)
+# =====================================================================
+def rechazo_con_giro(xy_ant, xy_act, R_act_ant, cfg_giro, focal_px, rng):
+    """¿Qué parejas encajan con el movimiento de la cámara, sabiendo ya cuánto ha girado?
+
+    El movimiento de la cámara entre dos imágenes es un giro y una traslación. El giro lo da
+    el giroscopio; de la traslación basta su dirección, y esa sale de solo 2 parejas (con la
+    matriz esencial de la etapa 8 hacen falta 5, porque hay que sacar también el giro).
+    xy_ant, xy_act: (N, 2) coordenadas normalizadas sin distorsión, en la imagen anterior y
+        en la actual.
+    R_act_ant: (3, 3) giro de la cámara: una dirección d en los ejes de la cámara anterior
+        es R_act_ant·d en los ejes de la cámara actual.
+    cfg_giro: sección "giro" de config/lightglue.yaml. focal_px: para pasar de coordenadas
+        normalizadas a píxeles. rng: generador de números al azar (np.random.default_rng).
+    Devuelve: (N,) bool, True = encaja.
+    """
+    n = len(xy_ant)
+    if n == 0:
+        return np.ones(0, dtype=bool)
+    umbral_px = cfg_giro["umbral_px"]
+
+    # 1. Quitar el giro: dónde se vería cada punto de la imagen anterior si la cámara solo
+    #    hubiera girado. Lo que le falte para llegar a su pareja es cosa de la traslación
+    rayos = np.column_stack([xy_ant, np.ones(n)]) @ R_act_ant.T       # cada fila: R·(x, y, 1)
+    delante = rayos[:, 2] > 1e-6                                      # tras el giro, sigue delante
+    rayos[~delante, 2] = 1.0                                          # (para no dividir por cero)
+    girados = np.column_stack([rayos[:, 0] / rayos[:, 2], rayos[:, 1] / rayos[:, 2], np.ones(n)])
+    actuales = np.column_stack([xy_act, np.ones(n)])
+    resto_px = np.linalg.norm(actuales[:, :2] - girados[:, :2], axis=1) * focal_px
+
+    # 2. Si casi no queda nada (la cámara ha girado sin desplazarse, o está quieta), no hay
+    #    traslación que buscar: una pareja encaja si el giro solo ya la explica
+    if n < 2 or np.median(resto_px) < cfg_giro["paralaje_min_px"]:
+        return delante & (resto_px < umbral_px)
+
+    # 3. Cada pareja obliga a la dirección de traslación t a ser perpendicular a un vector:
+    #    normal_i = girado_i x actual_i. Con dos parejas, t = normal_i x normal_j.
+    #    RANSAC: probar muchas parejas de parejas y quedarse con la t que más parejas cumplen
+    normales = np.cross(girados, actuales)
+    mejor = delante & (resto_px < umbral_px)              # como mínimo, las que explica el giro
+    for _ in range(cfg_giro["iteraciones"]):
+        i, j = rng.choice(n, 2, replace=False)
+        t = np.cross(normales[i], normales[j])
+        norma = np.linalg.norm(t)
+        if norma < 1e-12:
+            continue                                      # las dos parejas dicen lo mismo: no sirve
+        t = t / norma
+        # Recta epipolar de cada punto en la imagen actual: recta_i = t x girado_i (a·x + b·y + c = 0).
+        # Distancia de su pareja a esa recta: |recta·actual| / sqrt(a² + b²), y a píxeles
+        rectas = np.cross(t, girados)
+        largo = np.maximum(np.hypot(rectas[:, 0], rectas[:, 1]), 1e-12)
+        distancia_px = np.abs(np.sum(rectas * actuales, axis=1)) / largo * focal_px
+        encajan = delante & (distancia_px < umbral_px)
+        if encajan.sum() > mejor.sum():
+            mejor = encajan
+    return mejor
+
+
+# =====================================================================
 # Paso 22.4 — El front-end completo
 # =====================================================================
 class FrontEndLightGlue:
     """Recibe imágenes una a una y entrega las pistas que terminan (como FrontEnd, etapa 8)."""
+
+    usa_giro = True          # etapa 23: procesar() admite el giro de la cámara (el pipeline lo mira)
 
     def __init__(self, K, dist, cfg, emparejador=None):
         """K (3, 3), dist (5,): intrínsecos. cfg: dict de config/lightglue.yaml.
@@ -141,20 +203,26 @@ class FrontEndLightGlue:
         self.activas = {}                            # id -> Pista
         self.siguiente_id = 0
         self.n_imagenes = 0
+        self.rng = np.random.default_rng(cfg["giro"]["semilla"])     # el azar del RANSAC de 2 puntos
 
-    def procesar(self, gris, t_ns):
-        """Procesa una imagen. Devuelve: dict con
+    def procesar(self, gris, t_ns, R_act_ant=None):
+        """Procesa una imagen.
+
+        R_act_ant: (3, 3) giro de la cámara desde la imagen anterior, medido por el giroscopio
+            (lo calcula el pipeline, etapa 23), o None si no se sabe (sin IMU, primera imagen).
+        Devuelve: dict con
             terminadas: lista de Pista que acaban en la imagen anterior
             estadisticas: dict con los recuentos de esta imagen. Los mismos nombres que en
                 FrontEnd (perdidos_klt = pistas que el emparejador no ha continuado), y además
-                sin_pareja y poca_confianza (las dos partes de perdidos_klt) y los tiempos
-                de las redes, t_extraer_ms y t_emparejar_ms.
+                sin_pareja y poca_confianza (las dos partes de perdidos_klt), los tiempos
+                de las redes, t_extraer_ms y t_emparejar_ms, y con_giro (1 si el rechazo
+                geométrico de esta imagen ha usado el giro del giroscopio, 0 si no).
         """
         indice = self.n_imagenes
         cfg_pistas = self.cfg["pistas"]
         terminadas = []
         est = {"seguidos": 0, "perdidos_klt": 0, "rechazados_ransac": 0, "nuevos": 0,
-               "sin_pareja": 0, "poca_confianza": 0, "t_emparejar_ms": 0.0}
+               "sin_pareja": 0, "poca_confianza": 0, "t_emparejar_ms": 0.0, "con_giro": 0}
 
         # --- 1. SuperPoint sobre la imagen nueva ---
         actual = self.emparejador.extraer(gris)
@@ -177,14 +245,20 @@ class FrontEndLightGlue:
             puntos_act = np.zeros((len(self.puntos), 2), np.float32)
             puntos_act[validos] = puntos_sp[destino[validos]]
 
-            # --- 4. Rechazo geométrico (el de la etapa 8, tal cual) ---
+            # --- 4. Rechazo geométrico: con el giro del giroscopio (etapa 23) o, si no lo hay
+            #        o la configuración pide el otro, con la matriz esencial (etapa 8) ---
             idx = np.flatnonzero(validos)
             if len(idx) > 0:
                 xy_ant = mc.normalizar(self.puntos[idx], self.K, self.dist)
                 xy_act = mc.normalizar(puntos_act[idx], self.K, self.dist)
-                desplazamiento = np.linalg.norm(puntos_act[idx] - self.puntos[idx], axis=1)
-                encajan = rechazo_geometrico(xy_ant, xy_act, desplazamiento,
-                                             self.cfg["geometria"], self.K[0, 0])
+                if R_act_ant is not None and self.cfg["geometria"]["metodo"] == "giro":
+                    encajan = rechazo_con_giro(xy_ant, xy_act, R_act_ant, self.cfg["giro"],
+                                               self.K[0, 0], self.rng)
+                    est["con_giro"] = 1
+                else:
+                    desplazamiento = np.linalg.norm(puntos_act[idx] - self.puntos[idx], axis=1)
+                    encajan = rechazo_geometrico(xy_ant, xy_act, desplazamiento,
+                                                 self.cfg["geometria"], self.K[0, 0])
                 validos[idx[~encajan]] = False
                 est["rechazados_ransac"] = int((~encajan).sum())
 

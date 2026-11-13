@@ -30,7 +30,18 @@ pistas:
   distancia_min_px: 15        # una pista nueva no empieza más cerca de otro punto seguido
 
 geometria:                    # el RANSAC de la etapa 8, con el umbral adaptado a SuperPoint
+  metodo: esencial            # esencial: matriz esencial (etapa 8); giro: con el giroscopio (etapa 23)
   umbral_px: 2.0              # SuperPoint da píxeles enteros: más margen que el 1.0 de Lucas-Kanade
   confianza: 0.999
   paralaje_min_px: 1.0
   puntos_min: 8
+
+
+# ---------------------------------------------------------------------
+# Etapa 23 — Rechazo geométrico con el giro del giroscopio (RANSAC de 2 puntos)
+# ---------------------------------------------------------------------
+giro:
+  umbral_px: 2.0              # distancia máxima de un punto a su recta epipolar (como en geometria)
+  paralaje_min_px: 1.0        # si, quitado el giro, la mediana de lo que queda es menor, no se busca traslación
+  iteraciones: 100            # pruebas del RANSAC (con 2 parejas por prueba bastan pocas)
+  semilla: 0                  # del azar del RANSAC: la misma grabación da siempre el mismo resultado

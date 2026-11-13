@@ -3,9 +3,9 @@
 # y sin desfase. SUSTITUIR por el resultado de Kalibr (etapa 7.4).
 # Columnas de R_i_c = ejes x, y, z de la cámara expresados en ejes de la IMU.
 R_i_c:
-  - [0.0, 0.0, 1.0]
-  - [-1.0, 0.0, 0.0]
-  - [0.0, -1.0, 0.0]
+  - [-0.0022,  0.0509,  0.9987]
+  - [-0.9995,  0.0308, -0.0006]
+  - [ 0.0308, -0.9982,  0.0509]
 p_i_c_m: [0.024, 0.0, 0.035]   # posición de la cámara en ejes de la IMU [m]
 t_d_ns: 27660000               # t_cámara_corregido = t_cámara + t_d  [ns]
 info:
