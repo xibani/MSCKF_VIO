@@ -59,7 +59,7 @@ class PipelineVio:
         cfgs: dict con los dicts de config "vio", "frontend", "msckf" y "triangulacion".
         calib_acc: (sesgo (3,), escala (3,)) del acelerómetro (etapa 7.2), o None para
             usar la medida tal cual.
-        frontend: el front-end ya creado (etapa 22: FrontEndLIghtGlue), o None para el de
+        frontend: el front-end ya creado (etapa 22: FrontEndLightGlue), o None para el de
             siempre, FAST + Lucas-Kanade (etapa 8).
         """
         self.K, self.dist = K, dist
@@ -67,7 +67,7 @@ class PipelineVio:
         self.t_d_ns = int(t_d_ns)
         self.cfgs = cfgs
         if frontend is None:
-            self.frontend = FrontEnd(K, dist, cfgs["frontend"])
+            frontend = FrontEnd(K, dist, cfgs["frontend"])
         self.frontend = frontend
         self.filtro = None
         self.reposo = []  # muestras (t, w, a) mientras se inicializa
