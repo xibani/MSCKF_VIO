@@ -173,11 +173,14 @@ def imprimir_diagnostico(carpeta, cuenta, cfg):
     estaba lejos o mal iluminado.
     """
     ruta_meta = Path(carpeta) / "meta.json"
-    if ruta_meta.exists():
+    fijada = {}
+    try:
         with open(ruta_meta, encoding="utf-8") as f:
             fijada = json.load(f).get("exposicion_fijada") or {}
-        if "exposicion_us" in fijada:
-            print(f"  exposición fija de la grabación: {fijada['exposicion_us']} us")
+    except (OSError, ValueError):
+        print("  (meta.json ausente o vacío: la grabación se cortó; sin dato de exposición)")
+    if "exposicion_us" in fijada:
+        print(f"  exposición fija de la grabación: {fijada['exposicion_us']} us")
     p = cuenta["por_imagen"]
     giro = np.degrees(p["giro_rad_s"])
     con = p["esquinas"] > 0

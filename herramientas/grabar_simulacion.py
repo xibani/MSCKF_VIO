@@ -76,9 +76,11 @@ def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng, dist=
             else:
                 uv = s["obs"]["uv"][s["obs"]["imagen"] == j]
                 imagen = sim.renderizar(uv, tamano, graba["sigma_mancha_px"], graba["brillo_mancha"])
-            nombre = euroc.nombre_imagen(int(t))
+            # Etapa 7.4: corregir el desfase temporal cámara-IMU
+            sello = int(t) - int(cfg_ext.get("t_d_ns", 0))
+            nombre = euroc.nombre_imagen(sello)
             cv2.imwrite(str(carpeta_png / nombre), imagen)
-            f.write(euroc.linea_cam(int(t), nombre))
+            f.write(euroc.linea_cam(sello, nombre))
 
     # 4. Verdad: pose de la IMU en cada muestra
     with open(carpeta / "verdad.csv", "w", encoding="utf-8") as f:

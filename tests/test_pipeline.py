@@ -169,7 +169,8 @@ def test_vio_de_principio_a_fin_en_una_grabacion_sintetica(tmp_path):
     # Arranca tras los 2 s de reposo y procesa todas las imágenes siguientes
     assert len(resultados) >= 8 * 20 - 2 * 20 - 2
     assert set(resultados[0]["tiempos_ms"]) == {"imu", "frontend", "msckf", "total"}
-    assert resultados[-1]["t_ns"] == s["camaras"]["t_ns"][-1] + EXT["t_d_ns"]    # t_cam + t_d
+    # La grabación sella cada imagen t_d antes de su instante: sello + t_d = instante verdadero
+    assert resultados[-1]["t_ns"] == s["camaras"]["t_ns"][-1]
     # Error frente a la verdad, en el marco del filtro
     t_est = np.array([r["t_ns"] for r in resultados])
     p_est = np.array([r["p_w"] for r in resultados])
