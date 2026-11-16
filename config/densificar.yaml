@@ -1,0 +1,22 @@
+# config/densificar.yaml — Etapa 26: de la profundidad de cada keyframe a una sola nube densa
+# No necesita PyTorch: son cuentas con NumPy. Vale en la Pi y en el PC.
+
+paso_px: 4                    # se usa uno de cada 4 píxeles en cada dirección (uno de cada 16)
+profundidad_min_m: 0.3        # más cerca que esto no se usa (la red y el enfoque fallan pegados a la lente)
+profundidad_max_m: 8.0        # ni más lejos: el error en metros crece con la distancia
+
+bordes:                       # píxeles en un salto de profundidad (el canto de un mueble contra la pared)
+  salto_relativo: 0.03        # hay salto si dos píxeles vecinos difieren más del 3 % en profundidad
+  margen_px: 2                # se quitan también los píxeles a esta distancia del salto
+
+coherencia:                   # cada punto se comprueba desde los demás keyframes
+  umbral_relativo: 0.05       # otro keyframe confirma el punto si lo ve a la misma profundidad, con un 5 % de margen
+  vistas_min: 1               # confirmaciones que necesita un punto para quedarse
+
+voxel:                        # la nube final: un punto por cada cubo ocupado
+  lado_m: 0.05                # lado del cubo [m]
+  puntos_min: 2               # un cubo con menos puntos que esto no cuenta
+
+evaluacion:                   # solo con grabaciones del simulador, donde se sabe cómo es la habitación
+  cerca_m: 0.05               # un punto es bueno si está a menos de 5 cm de una superficie de verdad
+  celda_m: 0.10               # tamaño de las celdas con que se mide cuánta habitación cubre la nube

@@ -14,12 +14,13 @@ from herramientas.grabar_simulacion import guardar_grabacion_sintetica
 from vio import modelo_camara as mc
 from vio import protocolo
 from vio.config import cargar_config
-from vio.pipeline import PipelineVio
+from vio.pipeline import CABECERA_POSES, PipelineVio, linea_pose
 
 
 @pytest.fixture(scope="session")
 def sesion_con_textura(tmp_path_factory):
-    """Etapa 24: una grabación con textura de 10 s pasada por el VIO, con su mapa.paquetes.
+    """Etapa 24: una grabación con textura de 10 s pasada por el VIO, con su mapa.paquetes
+    y (etapa 26) su vio_trayectoria.csv, como los deja apps/pi_vio.
 
     scope="session": se hace una sola vez para todos los tests que la pidan (tarda lo suyo:
     dibuja 201 imágenes). No depende de config/camara_imu.yaml: usa la extrínseca del
@@ -37,13 +38,16 @@ def sesion_con_textura(tmp_path_factory):
 
     cfgs = {n: cargar_config(n) for n in ("vio", "frontend", "msckf", "triangulacion")}
     pipeline = PipelineVio(K, dist, s["R_c_i"], s["t_c_i"], 0, cfgs)
-    with open(carpeta / "mapa.paquetes", "wb") as archivo:
+    with open(carpeta / "mapa.paquetes", "wb") as archivo, \
+        open(carpeta / "vio_trayectoria.csv", "w", encoding="utf-8") as trayectoria:
+        trayectoria.write(CABECERA_POSES)
         for evento in eventos_grabacion(carpeta, ADELANTO_IMU_NS):
             if evento[0] == "imu":
                 pipeline.nueva_imu(*evento[1:])
                 continue
             r = pipeline.nueva_imagen(*evento[1:])
             if r is not None:
+                trayectoria.write(linea_pose(r["t_ns"], r["R_w_i"], r["p_w"]))
                 for datos in paquetes_mapa(r, K, dist, cfgs["vio"]["mapeo"]):
                     protocolo.escribir_paquete(archivo, datos)
     return {"carpeta": carpeta, "s": s, "K": K, "dist": dist, "t_d_ns": 0}
