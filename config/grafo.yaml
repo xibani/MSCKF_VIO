@@ -1,0 +1,15 @@
+# config/grafo.yaml — Etapa 29: grafo de poses (corregir los keyframes con los bucles)
+
+odometria:                    # cuánto se confía en el paso de un keyframe al siguiente que da el VIO
+  sigma_m: 0.01               # error típico de ese paso en posición [m]
+  sigma_grados: 0.2           # y en orientación
+
+bucle:                        # cuánto se confía en la pose relativa que mide un bucle (etapa 28)
+  sigma_m: 0.03
+  sigma_grados: 0.5
+  huber: 3.0                  # un bucle que se aparta más de 3 sigmas pesa cada vez menos (por si es falso)
+
+optimizacion:
+  iteraciones_max: 50
+  amortiguacion: 0.001        # valor inicial de la amortiguación (Levenberg-Marquardt)
+  paso_min: 0.000001          # se para cuando la corrección mayor es menor que esto [m o rad]

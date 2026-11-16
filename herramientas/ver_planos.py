@@ -5,6 +5,7 @@ Uso, desde la raíz del proyecto:
     python -m herramientas.ver_planos datos/sim_textura                 # sobre nube_densa.ply
     python -m herramientas.ver_planos datos/sim_textura --con-verdad    # sobre nube_densa_verdad.ply
     python -m herramientas.ver_planos datos/20261116_101500 --archivo mapa_2.paquetes
+    python -m herramientas.ver_planos datos/sim_textura30 --nube nube_densa_corregida.ply   # etapa 29
 La carpeta es la de la sesión. Necesita la nube que escribe herramientas.nube_densa (etapa 26)
 y el mapa.paquetes (de él salen las posiciones de las cámaras, para saber hacia dónde es
 "dentro" de la habitación).
@@ -13,8 +14,9 @@ Escribe en la carpeta:
     planos.csv    una fila por plano: tipo, normal, d, centro, ejes, extremos, superficie...
     planos.ply    la nube con cada plano de un color (gris: puntos sin plano)
     planos.png    planta con las paredes dibujadas, y alzado
-(planos_verdad.* con --con-verdad). Con una grabación del simulador compara además cada
-plano con la cara de verdad de la habitación.
+(planos_verdad.* con --con-verdad; con --nube, el mismo apellido que la nube:
+nube_densa_corregida.ply -> planos_corregida.*). Con una grabación del simulador compara
+además cada plano con la cara de verdad de la habitación.
 """
 
 import argparse
@@ -129,6 +131,14 @@ def dibujar(ruta, p, planos, camaras):
     plt.close(fig)
 
 
+def apellido_de_nube(nombre_nube):
+    """Lo que el nombre de una nube lleva detrás de "nube_densa": "" para nube_densa.ply,
+    "_verdad" para nube_densa_verdad.ply, "_corregida" para nube_densa_corregida.ply... Los
+    resultados de los planos llevan el mismo, para no pisar los de otra nube."""
+    nombre = Path(nombre_nube).stem
+    return nombre[len("nube_densa"):] if nombre.startswith("nube_densa") else "_" + nombre
+
+
 def main():
     parser = argparse.ArgumentParser(description="Planos de la nube densa de una sesión")
     parser.add_argument("carpeta", help="carpeta de la sesión (la que tiene mapa.paquetes y la nube)")
@@ -136,14 +146,18 @@ def main():
                         help="nombre del archivo de paquetes dentro de la carpeta")
     parser.add_argument("--con-verdad", action="store_true",
                         help="usar la nube hecha con la profundidad verdadera (nube_densa_verdad.ply)")
+    parser.add_argument("--nube", default=None,
+                        help="nombre de otra nube de la carpeta (p. ej. nube_densa_corregida.ply, de la etapa 29)")
     args = parser.parse_args()
     carpeta = Path(args.carpeta)
     cfg = cargar_config("planos")
 
-    ruta_nube = carpeta / nombre_de_salida("nube_densa", "ply", args.con_verdad)
+    nombre_nube = args.nube if args.nube is not None else nombre_de_salida("nube_densa", "ply", args.con_verdad)
+    apellido = apellido_de_nube(nombre_nube)
+    ruta_nube = carpeta / nombre_nube
     if not ruta_nube.exists():
         print(f"No existe {ruta_nube}: ejecuta antes herramientas.nube_densa"
-              f"{' --con-verdad' if args.con_verdad else ''}.")
+              f"{' --con-verdad' if args.con_verdad else ''} (o herramientas.cerrar_bucles).")
         return
     p, _ = leer_ply(ruta_nube)
     mapa = leer_mapa(carpeta / args.archivo)
@@ -163,9 +177,9 @@ def main():
         comparaciones = pl.comparar_con_la_verdad(planos, *transformacion, dimensiones)
     print(informe(planos, medidas, len(p), comparaciones, dimensiones))
 
-    ruta_csv = carpeta / nombre_de_salida("planos", "csv", args.con_verdad)
-    ruta_ply = carpeta / nombre_de_salida("planos", "ply", args.con_verdad)
-    ruta_png = carpeta / nombre_de_salida("planos", "png", args.con_verdad)
+    ruta_csv = carpeta / f"planos{apellido}.csv"
+    ruta_ply = carpeta / f"planos{apellido}.ply"
+    ruta_png = carpeta / f"planos{apellido}.png"
     guardar_csv(ruta_csv, planos)
     colores = np.tile(np.array(GRIS_SIN_PLANO, dtype=np.uint8), (len(p), 1))
     for color, q in zip(colores_de_planos(len(planos)), planos):
