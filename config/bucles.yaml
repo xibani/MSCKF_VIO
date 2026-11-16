@@ -1,0 +1,34 @@
+# config/bucles.yaml — Etapa 28: detectar que se ha vuelto a un sitio (cierre de bucles)
+
+emparejador: lightglue        # lightglue: SuperPoint + LightGlue (PC, con PyTorch); orb: clásico, sin redes (vale en la Pi)
+
+candidatos:                   # qué parejas de keyframes se comparan
+  separacion_min: 10          # entre los dos tiene que haber al menos estos keyframes (los vecinos ya los une la odometría)
+  por_pose: true              # true: solo los que, según el VIO, están cerca y miran parecido; false: todos con todos
+  distancia_max_m: 1.0        # distancia máxima entre las dos cámaras según el VIO (debe ser mayor que la deriva esperada)
+  angulo_max_grados: 30.0     # ángulo máximo entre hacia dónde miran
+  max_por_keyframe: 5         # de cada keyframe, como mucho sus 5 candidatos más cercanos
+
+parejas:
+  umbral_confianza: 0.5       # una pareja con menos confianza no se usa (como en las pistas, etapa 22)
+  minimas: 30                 # con menos parejas no se intenta calcular la pose
+
+pnp:                          # la pose de una cámara a partir de puntos 3D de la otra
+  profundidad_min_m: 0.3      # solo se usan puntos con profundidad entre estos dos valores
+  profundidad_max_m: 8.0
+  umbral_px: 3.0              # un punto encaja si se proyecta a menos de esto de su pareja
+  iteraciones: 200            # pruebas del RANSAC
+  confianza: 0.999
+  encajan_min: 50             # con menos puntos que encajen, no hay bucle
+  fraccion_min: 0.5           # y tienen que ser al menos la mitad de los puntos con profundidad
+  semilla: 0                  # del azar del RANSAC de OpenCV
+
+acuerdo:                      # la pose se calcula en los dos sentidos (de A a B y de B a A) y tienen que coincidir
+  distancia_max_m: 0.05
+  angulo_max_grados: 1.0
+
+orb:                          # el emparejador clásico (solo si emparejador: orb)
+  max_puntos: 1000            # puntos por imagen
+  niveles: 4                  # tamaños de imagen en que busca puntos (aguanta algo de cambio de distancia)
+  umbral_fast: 10             # contraste mínimo de una esquina
+  razon: 0.8                  # una pareja vale si es claramente mejor que la segunda opción (distancia < 0,8 × la segunda)
