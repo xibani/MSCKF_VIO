@@ -1,0 +1,20 @@
+# config/planos.yaml — Etapa 27: los planos de la nube densa (paredes, suelo, techo, mesas)
+# No necesita PyTorch: son cuentas con NumPy. Vale en la Pi y en el PC.
+
+ransac:
+  iteraciones: 500            # tríos de puntos que se prueban para buscar cada plano
+  umbral_m: 0.08              # un punto es del plano si está a menos de 8 cm de él
+  refinados: 2                # veces que se reajusta el plano con sus puntos y se vuelven a contar
+  puntos_min: 400             # un plano con menos puntos no cuenta (con cubos de 5 cm, 400 puntos son 1 m²)
+  planos_max: 30              # como mucho se buscan estos (una pared gruesa puede salir en varias láminas)
+  semilla: 0                  # del azar del RANSAC
+
+fusion:                       # dos planos encontrados por separado que en realidad son la misma superficie
+  angulo_grados: 10.0         # sus normales forman menos de este ángulo...
+  distancia_m: 0.25           # ...y están a menos de esta distancia uno de otro
+
+tipos:
+  tolerancia_grados: 10.0     # un plano es horizontal o vertical si se aparta menos de esto
+
+medidas:
+  celda_m: 0.10               # tamaño de las celdas con que se mide la superficie de cada plano
