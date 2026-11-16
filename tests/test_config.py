@@ -1,5 +1,6 @@
 """tests/test_config.py — Tests de vio/config.py"""
 
+import numpy as np
 import pytest
 
 from vio import config
@@ -31,3 +32,13 @@ def test_archivo_vacio(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CARPETA_CONFIG", tmp_path)
     with pytest.raises(ValueError):
         config.cargar_config("vacio")
+
+
+def test_la_extrinseca_es_un_giro():
+    # R_i_c se teclea a mano en config/camara_imu.yaml: un signo cambiado y deja de ser un giro
+    # (las columnas ya no son perpendiculares entre sí), y todo lo que la usa da resultados
+    # sin sentido. Tolerancia 0,001: el redondeo a 4 decimales da del orden de 0,0001
+    R = np.array(config.cargar_config("camara_imu")["R_i_c"], dtype=float)
+    assert R.shape == (3, 3)
+    assert np.abs(R @ R.T - np.eye(3)).max() < 1e-3          # filas de largo 1 y perpendiculares
+    assert np.linalg.det(R) == pytest.approx(1.0, abs=1e-3)  # +1: un giro; -1 sería un espejo

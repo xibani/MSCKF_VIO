@@ -349,10 +349,9 @@ def test_vio_con_pistas_hechas_de_parejas():
     from vio.pipeline import PipelineVio
 
     cfgs = {n: cargar_config(n) for n in ("vio", "frontend", "msckf", "triangulacion")}
-    ext = cargar_config("camara_imu")
     cfg_vio = copy.deepcopy(CFG_SIM)
     cfg_vio["trayectoria"]["duracion_s"] = 8.0
-    cfg_vio["camara"].update(R_i_c=ext["R_i_c"], p_i_c_m=ext["p_i_c_m"], ruido_px=0.0)
+    cfg_vio["camara"]["ruido_px"] = 0.0      # la extrínseca, la del simulador (no la de la placa)
     graba = cfg_vio["grabacion_sintetica"]
 
     def pose(t):
@@ -378,7 +377,8 @@ def test_vio_con_pistas_hechas_de_parejas():
     # 2. El VIO, con la IMU y las imágenes por orden de tiempo (las imágenes van vacías: el
     #    emparejador de mentira no las mira)
     frontend = fel.FrontEndLightGlue(K, DIST, CFG, falso)
-    pipeline = PipelineVio(K, DIST, s["R_c_i"], s["t_c_i"], ext["t_d_ns"], cfgs, frontend=frontend)
+    # t_d = 0: en el simulador la cámara y la IMU comparten reloj, sin desfase
+    pipeline = PipelineVio(K, DIST, s["R_c_i"], s["t_c_i"], 0, cfgs, frontend=frontend)
     gris = np.zeros((480, 640), np.uint8)
     resultados = []
     i = 0
