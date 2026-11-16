@@ -40,6 +40,9 @@ build/
 dist/
 *.egg-info/
 
+# Ficheros
+crear_video.py
+
 # Datasets and recordings
 data/
 datasets/

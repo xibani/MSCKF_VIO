@@ -6,6 +6,8 @@ Estructura de una grabación:
     <carpeta>/mav0/cam0/data.csv           una fila por imagen: tiempo y nombre
     <carpeta>/mav0/cam0/data/<t_ns>.png    las imágenes
     <carpeta>/mav0/cam0/diagnostico.csv    datos extra de cada imagen (formato propio)
+    <carpeta>/mav0/prof0/data/<t_ns>.png   profundidad VERDADERA de cada imagen (formato propio,
+                                           etapa 24; solo en las grabaciones del simulador)
 """
 
 from pathlib import Path
@@ -130,3 +132,47 @@ def leer_diag_cam(ruta_csv):
         "exposicion_us": np.array(columnas["exposicion_us"]),
         "ganancia": np.array(columnas["ganancia"]),
     }
+
+
+# =====================================================================
+# Etapa 24 — Profundidad verdadera de cada imagen (grabaciones del simulador con textura)
+# =====================================================================
+MM_POR_M = 1000.0            # la profundidad se guarda en milímetros enteros (PNG de 16 bits)
+PROFUNDIDAD_MAX_M = 65.0     # un entero de 16 bits llega a 65535 mm
+
+
+def carpeta_profundidad(carpeta):
+    """Carpeta de las profundidades verdaderas. Cada archivo se llama igual que su imagen."""
+    return Path(carpeta) / "mav0" / "prof0" / "data"
+
+
+def profundidad_a_mm(profundidad_m):
+    """De metros (alto, ancho) float a milímetros uint16, para guardarla en un PNG de 16 bits.
+
+    Un PNG de 16 bits guarda enteros de 0 a 65535: en milímetros, hasta 65 m con 1 mm de
+    resolución. El 0 queda reservado para "sin dato" (valores no finitos, negativos o lejanos).
+    """
+    con_dato = np.isfinite(profundidad_m) & (profundidad_m > 0) & (profundidad_m < PROFUNDIDAD_MAX_M)
+    mm = np.zeros(profundidad_m.shape, dtype=np.uint16)
+    mm[con_dato] = np.round(profundidad_m[con_dato] * MM_POR_M).astype(np.uint16)
+    return mm
+
+
+def mm_a_profundidad(mm):
+    """Inversa de profundidad_a_mm: metros (alto, ancho) float, con NaN donde no hay dato."""
+    profundidad_m = mm.astype(np.float64) / MM_POR_M
+    profundidad_m[mm == 0] = np.nan
+    return profundidad_m
+
+
+def leer_profundidad(carpeta, t_ns):
+    """La profundidad verdadera de la imagen con marca t_ns, o None si la grabación no la trae.
+
+    Devuelve: (alto, ancho) float [m]: la z, en ejes de la cámara, de lo que se ve en cada píxel.
+    """
+    import cv2      # aquí dentro: el resto de este módulo no lo necesita
+
+    ruta = carpeta_profundidad(carpeta) / nombre_imagen(int(t_ns))
+    if not ruta.exists():
+        return None
+    return mm_a_profundidad(cv2.imread(str(ruta), cv2.IMREAD_UNCHANGED))

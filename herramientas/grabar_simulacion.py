@@ -12,6 +12,8 @@ se prueban de principio a fin con una respuesta conocida.
 Etapa 20: con --textura, en lugar de manchas se dibuja la habitación con un dibujo en las
 paredes, el suelo y el techo (vio/escena.py): imágenes parecidas a una foto, que es lo que
 necesitan SuperPoint y LightGlue. La trayectoria, la IMU y la verdad son las mismas.
+Etapa 24: con --textura se guarda además la profundidad verdadera de cada imagen
+(mav0/prof0/data, PNG de 16 bits en milímetros), para medir contra ella el mapa del VIO.
 """
 
 import argparse
@@ -64,13 +66,15 @@ def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng, dist=
         cfg_textura = cfg["textura"]
         s["habitacion"] = escena.crear_habitacion(cfg["mundo"]["habitacion_m"], cfg_textura, rng)
         rayos = escena.rayos_camara(K, dist, tamano)      # una vez: no dependen de la pose
+        carpeta_prof = euroc.carpeta_profundidad(carpeta) # etapa 24
+        carpeta_prof.mkdir(parents=True, exist_ok=True) 
     carpeta_png = euroc.carpeta_imagenes(carpeta)
     carpeta_png.mkdir(parents=True, exist_ok=True)
     with open(euroc.ruta_cam(carpeta), "w", encoding="utf-8") as f:
         f.write(euroc.CABECERA_CAM)
         for j, t in enumerate(s["camaras"]["t_ns"]):
             if textura:
-                ideal, _ = escena.renderizar_habitacion(
+                ideal, profundidad = escena.renderizar_habitacion(
                     s["habitacion"], s["camaras"]["R_c_w"][j], s["camaras"]["t_c_w"][j], rayos)
                 imagen = escena.acabar_imagen(ideal, cfg_textura, rng)
             else:
@@ -80,6 +84,8 @@ def guardar_grabacion_sintetica(carpeta, cfg_vio, K, tamano, cfg_ext, rng, dist=
             sello = int(t) - int(cfg_ext.get("t_d_ns", 0))
             nombre = euroc.nombre_imagen(sello)
             cv2.imwrite(str(carpeta_png / nombre), imagen)
+            if textura:      # etapa 24: la profundidad verdadera, con el mismo nombre que la imagen
+                cv2.imwrite(str(carpeta_prof / nombre), euroc.profundidad_a_mm(profundidad))
             f.write(euroc.linea_cam(sello, nombre))
 
     # 4. Verdad: pose de la IMU en cada muestra
