@@ -1,0 +1,17 @@
+# config/profundidad.yaml — Etapa 25: profundidad de una sola imagen con Depth Anything V2
+# Solo se usa en el PC: necesita PyTorch y transformers.
+
+dispositivo: auto             # auto: tarjeta NVIDIA si PyTorch la ve, y si no el procesador; cpu; cuda
+modelo: depth-anything/Depth-Anything-V2-Small-hf   # el pequeño: 25 millones de parámetros
+
+ajuste:                       # de la profundidad relativa de la red a metros, con los puntos del VIO
+  puntos_min: 10              # con menos puntos del VIO en el keyframe, no se intenta
+  rango_min: 0.15             # si los puntos no cubren al menos un 15 % de variación en 1/z, solo se ajusta la escala
+  iteraciones: 200            # pruebas del RANSAC (2 puntos por prueba)
+  umbral_relativo: 0.10       # un punto encaja si la profundidad ajustada se aparta menos del 10 % de la del VIO
+  encajan_min: 0.5            # si no encaja al menos la mitad de los puntos, el ajuste no vale
+  inversa_min: 0.02           # 1/z mínimo que se acepta [1/m]: lo que quede a más de 50 m, sin dato
+  semilla: 0                  # del azar del RANSAC
+
+evaluacion:                   # solo con grabaciones del simulador, donde se sabe la verdad
+  umbral_delta: 1.25          # un píxel es bueno si estimada/verdadera está entre 1/1,25 y 1,25
