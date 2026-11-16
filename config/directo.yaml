@@ -1,0 +1,6 @@
+# config/directo.yaml — Etapa 30: reconstrucción densa en directo (apps/pc_denso)
+# Lo demás (rejilla de píxeles, filtros, cubos) sale de config/densificar.yaml.
+
+ventana: 8                    # cada keyframe se comprueba con, como mucho, los 8 anteriores...
+retraso: 3                    # ...y los 3 siguientes: entra en la nube cuando han llegado 3 más
+avisar_cada: 5                # cada cuántos keyframes se escribe una línea y se actualiza la figura
