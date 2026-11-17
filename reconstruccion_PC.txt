@@ -1,0 +1,36 @@
+# El VIO sobre la grabación: escribe mapa.paquetes y vio_trayectoria.csv en la carpeta
+python -m apps.pi_vio --grabacion datos\20261117_121318_KLT --sin-red
+python -m herramientas.informe_lazo datos\20261117_121318_KLT
+python -m herramientas.ver_pistas datos\20261117_121318_KLT
+
+# Profundidad de cada keyframe (Depth Anything), nube densa y planos
+python -m herramientas.ver_profundidad datos\20261117_121318_KLT
+python -m herramientas.nube_densa datos\20261117_121318_KLT
+python -m herramientas.ver_planos datos\20261117_121318_KLT
+
+# Bucles (LightGlue), corrección de las poses y nube y planos corregidos
+python -m herramientas.buscar_bucles datos\20261117_121318_KLT
+python -m herramientas.cerrar_bucles datos\20261117_121318_KLT
+python -m herramientas.ver_planos datos\20261117_121318_KLT --nube nube_densa_corregida.ply
+
+
+
+
+Para lanzar con LightGlue
+
+
+
+# El VIO sobre la grabación: escribe mapa.paquetes y vio_trayectoria.csv en la carpeta
+python -m apps.pi_vio --grabacion datos\20261117_121318_SPLG --sin-red --frontend lightglue
+python -m herramientas.informe_lazo datos\20261117_121318_SPLG
+python -m herramientas.ver_pistas datos\20261117_121318_SPLG
+
+# Profundidad de cada keyframe (Depth Anything), nube densa y planos
+python -m herramientas.ver_profundidad datos\20261117_121318_SPLG
+python -m herramientas.nube_densa datos\20261117_121318_SPLG
+python -m herramientas.ver_planos datos\20261117_121318_SPLG
+
+# Bucles (LightGlue), corrección de las poses y nube y planos corregidos
+python -m herramientas.buscar_bucles datos\20261117_121318_SPLG
+python -m herramientas.cerrar_bucles datos\20261117_121318_SPLG
+python -m herramientas.ver_planos datos\20261117_121318_SPLG --nube nube_densa_corregida.ply

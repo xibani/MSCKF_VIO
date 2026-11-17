@@ -20,6 +20,6 @@ ventana:
   clones_max: 15               # M: imágenes cuya pose se guarda en el estado
 
 correccion:
-  ruido_px: 1.0                # sigma de cada observación de la cámara [px]
+  ruido_px: 2.0                # sigma de cada observación de la cámara [px]
   observaciones_min: 3         # pistas más cortas no se usan
   confianza_chi2: 0.95         # prueba de outliers

@@ -3,6 +3,8 @@ vio/frontend.py — Detección y seguimiento de puntos de imagen en imagen.
 
 Por cada imagen nueva:
     1. Seguir los puntos de la imagen anterior (Lucas-Kanade piramidal).
+       Etapa 31: si el pipeline da el giro de la cámara medido por el giroscopio, cada punto
+       se busca a partir de donde lo habría llevado ese giro, no desde donde estaba.
     2. Descartar los seguimientos dudosos (ida y vuelta, bordes).
     3. Descartar los que no encajan con un movimiento rígido de la cámara (RANSAC).
     4. Las pistas de los puntos perdidos se dan por terminadas y se entregan.
@@ -77,12 +79,54 @@ def detectar(gris, puntos_existentes, cfg_det, margen_px):
 
 
 # =====================================================================
+# Etapa 31 — Predicción de la posición de cada punto con el giro del giroscopio
+# =====================================================================
+def predecir_con_giro(puntos, R_act_ant, K, dist):
+    """Dónde estaría cada punto en la imagen actual si la cámara solo hubiera girado.
+
+    Un punto de la imagen es una DIRECCIÓN desde la cámara: d = (x, y, 1), con (x, y) sus
+    coordenadas normalizadas sin distorsión. Si la cámara gira R_act_ant (d_act = R_act_ant·d_ant,
+    vio/pipeline.giro_camara) y no se desplaza, esa misma dirección del mundo se ve en
+    d_act, y su píxel es la proyección de d_act con K y la distorsión. Esto vale para cualquier
+    profundidad: un giro puro mueve igual los puntos cercanos y los lejanos.
+    Lo que no explica el giro (la traslación, que sí depende de la profundidad, y el error del
+    giroscopio) lo corrige después Lucas-Kanade, partiendo de esta predicción.
+
+    puntos: (N, 2) [px] en la imagen anterior. R_act_ant: (3, 3). K, dist: intrínsecos.
+    Devuelve: (prediccion (N, 2) float32 [px], delante (N,) bool). delante = False si con ese
+    giro la dirección queda detrás de la cámara (no se puede proyectar); su predicción se deja
+    en la posición de partida.
+    """
+    n = len(puntos)
+    prediccion = np.asarray(puntos, dtype=np.float32).reshape(-1, 2).copy()
+    delante = np.zeros(n, dtype=bool)
+    if n == 0:
+        return prediccion, delante
+    # 1. Píxeles -> direcciones (x, y, 1) en la cámara anterior
+    xy = mc.normalizar(puntos, K, dist)
+    d_ant = np.column_stack([xy, np.ones(n)])
+    # 2. La misma dirección vista desde la cámara actual
+    d_act = d_ant @ R_act_ant.T                       # cada fila: R_act_ant · d_ant
+    delante = d_act[:, 2] > 0
+    if not delante.any():
+        return prediccion, delante
+    # 3. Direcciones -> píxeles, con la distorsión (cámara en el origen y sin girar: ya está en sus ejes)
+    proyectados, _ = cv2.projectPoints(d_act[delante].reshape(-1, 1, 3), np.zeros(3), np.zeros(3),
+                                       K, np.asarray(dist, dtype=np.float64))
+    prediccion[delante] = proyectados.reshape(-1, 2)
+    return prediccion, delante
+
+
+# =====================================================================
 # Paso 8.2 — Seguimiento con Lucas-Kanade y comprobación de ida y vuelta
 # =====================================================================
-def seguir(gris_ant, gris_act, puntos, cfg_seg):
+def seguir(gris_ant, gris_act, puntos, cfg_seg, giro=None):
     """Sigue los puntos de la imagen anterior a la actual.
 
     puntos: array (N, 2) [px] en la imagen anterior.
+    giro: None, o (R_act_ant, K, dist) para empezar a buscar donde lo lleva el giro (etapa 31).
+        La vuelta parte, igual, de donde llevaría el giro inverso (R_act_antᵀ) a lo encontrado:
+        así la comprobación ida-vuelta sigue siendo independiente (no se le da la respuesta).
     Devuelve: (puntos_act (N, 2), validos (N,) bool, error_ida_vuelta (N,) [px]).
     """
     n = len(puntos)
@@ -97,9 +141,24 @@ def seguir(gris_ant, gris_act, puntos, cfg_seg):
     p0 = puntos.reshape(-1, 1, 2).astype(np.float32)
 
     # 1. Ida: de la imagen anterior a la actual
-    p1, estado_ida, _ = cv2.calcOpticalFlowPyrLK(gris_ant, gris_act, p0, None, **parametros)
-    # 2. Vuelta: de la actual a la anterior, partiendo de lo encontrado
-    p0_vuelta, estado_vuelta, _ = cv2.calcOpticalFlowPyrLK(gris_act, gris_ant, p1, None, **parametros)
+    if giro is None:
+        p1, estado_ida, _ = cv2.calcOpticalFlowPyrLK(gris_ant, gris_act, p0, None, **parametros)
+    else:
+        R_act_ant, K, dist = giro
+        prediccion, _ = predecir_con_giro(puntos, R_act_ant, K, dist)
+        # OPTFLOW_USE_INITIAL_FLOW: el cuarto argumento ya no es "nada" sino el punto de partida
+        p1, estado_ida, _ = cv2.calcOpticalFlowPyrLK(gris_ant, gris_act, p0, prediccion.reshape(-1, 1, 2).copy(),
+                                                     flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **parametros)
+
+    # 2. Vuelta: de la actual a la anterior, partiendo de lo encontrado (o de donde lo
+    #    devolvería el giro inverso)
+    if giro is None:
+        p0_vuelta, estado_vuelta, _ = cv2.calcOpticalFlowPyrLK(gris_act, gris_ant, p1, None, **parametros)
+    else:
+        prediccion_vuelta, _ = predecir_con_giro(p1.reshape(-1, 2), R_act_ant.T, K, dist)
+        p0_vuelta, estado_vuelta, _ = cv2.calcOpticalFlowPyrLK(
+            gris_act, gris_ant, p1, prediccion_vuelta.reshape(-1, 1, 2).copy(),
+            flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **parametros)
 
     p1 = p1.reshape(-1, 2)
     error_ida_vuelta = np.linalg.norm(p0_vuelta.reshape(-1, 2) - puntos, axis=1)
@@ -171,6 +230,9 @@ class FrontEnd:
         self.K = K
         self.dist = dist
         self.cfg = cfg
+        # Etapa 31: el pipeline mira este atributo; si es True, le pasa a procesar() el giro de
+        # la cámara desde la imagen anterior, medido por el giroscopio
+        self.usa_giro = bool(cfg["seguimiento"]["usar_giro"])
         self.gris_ant = None
         self.puntos = np.zeros((0, 2), np.float32)   # posición actual de cada punto seguido
         self.ids = np.zeros(0, dtype=int)            # id de la pista de cada punto
@@ -178,19 +240,37 @@ class FrontEnd:
         self.siguiente_id = 0
         self.n_imagenes = 0
 
-    def procesar(self, gris, t_ns):
-        """Procesa una imagen. Devuelve: dict con
+    def procesar(self, gris, t_ns, R_act_ant=None):
+        """Procesa una imagen.
+
+        R_act_ant: (3, 3) giro de la cámara desde la imagen anterior (d_act = R_act_ant·d_ant),
+            o None. Solo se usa si config/frontend.yaml tiene seguimiento.usar_giro: true.
+        Devuelve: dict con
             terminadas: lista de Pista que acaban en la imagen anterior
-            estadisticas: dict con los recuentos de esta imagen
+            estadisticas: dict con los recuentos de esta imagen. Etapa 31, además:
+                con_giro: 1 si se usó el giro en esta imagen, 0 si no
+                giro_px: mediana de lo que movió el giro a los puntos (la predicción) [px]
+                resto_px: mediana de lo que tuvo que corregir Lucas-Kanade después [px]
         """
         indice = self.n_imagenes
         terminadas = []
-        est = {"seguidos": 0, "perdidos_klt": 0, "rechazados_ransac": 0, "nuevos": 0}
+        est = {"seguidos": 0, "perdidos_klt": 0, "rechazados_ransac": 0, "nuevos": 0,
+               "con_giro": 0, "giro_px": 0.0, "resto_px": 0.0}
 
         # --- 1-3. Seguir los puntos existentes y filtrar ---
         if self.gris_ant is not None and len(self.puntos) > 0:
-            puntos_act, validos, _ = seguir(self.gris_ant, gris, self.puntos, self.cfg["seguimiento"])
+            giro = None
+            prediccion = self.puntos                 # sin giro, se busca desde donde estaba
+            if self.usa_giro and R_act_ant is not None:
+                giro = (R_act_ant, self.K, self.dist)
+                est["con_giro"] = 1
+                prediccion, _ = predecir_con_giro(self.puntos, R_act_ant, self.K, self.dist)
+            puntos_act, validos, _ = seguir(self.gris_ant, gris, self.puntos, self.cfg["seguimiento"], giro)
             est["perdidos_klt"] = int((~validos).sum())
+            if validos.any():
+                # Para entender qué hace cada parte: cuánto explica el giro y cuánto queda
+                est["giro_px"] = float(np.median(np.linalg.norm(prediccion[validos] - self.puntos[validos], axis=1)))
+                est["resto_px"] = float(np.median(np.linalg.norm(puntos_act[validos] - prediccion[validos], axis=1)))
 
             idx = np.flatnonzero(validos)
             if len(idx) > 0:

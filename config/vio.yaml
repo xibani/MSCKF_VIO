@@ -10,6 +10,18 @@ reposo:                       # ZUPT: si los puntos no se mueven, la velocidad e
   puntos_min: 10              # con menos puntos seguidos no se decide
   sigma_velocidad_m_s: 0.01   # confianza en "v = 0"
 
+giro_puro:                    # etapa 32: ZUPT de giro puro (vio/pipeline.es_giro_puro)
+  activo: true                # false: como antes
+  imagenes_ventana: 5         # se compara con la imagen de hace 5 (0,25 s): en una sola, la traslación
+                              # de la cámara se confunde con un giro pequeño si la escena está lejos
+  puntos_min: 15              # puntos vistos en las dos imágenes; con menos no se decide
+  giro_min_px: 10.0           # el giro debe mover los puntos al menos esto en la ventana (mediana);
+                              # 10 px ≈ 0,9° ≈ 4 °/s
+  resto_max_px: 1.5           # lo que no explica el mejor giro (mediana). Con escena a profundidades
+                              # variadas, la traslación deja un resto que crece con la ventana
+  diferencia_max_grados: 1.0  # giro visto frente al del giroscopio (cubre error de t_d y sesgo)
+  sigma_velocidad_m_s: 0.15   # confianza en "v ≈ 0": a mano, con 10 cm de brazo a 80 °/s, ~0,14 m/s
+
 ejecucion:
   aviso_cada_s: 1.0           # cada cuánto se imprime el estado
   presupuesto_ms: 50.0        # tiempo disponible por imagen a 20 fps

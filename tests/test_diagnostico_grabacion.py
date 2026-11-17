@@ -1,6 +1,8 @@
 """
 tests/test_diagnostico_grabacion.py — Los detectores de herramientas/diagnostico_grabacion.py
-encuentran fallos sintéticos conocidos (hueco, saturación, IMU congelada, frame repetido, desplazamiento).
+encuentran fallos sintéticos conocidos (hueco, saturación, IMU congelada, frame repetido, desplazamiento,
+tramo sin correcciones, inicio de la divergencia) y el CSV de recuentos de vio/pipeline.py se lee igual
+que se escribe.
 
     python -m pytest tests/test_diagnostico_grabacion.py -v
 """
@@ -9,7 +11,10 @@ import cv2
 import numpy as np
 
 from herramientas.diagnostico_grabacion import (agrupar_intervalos, analizar_imagenes, detectar_huecos,
-                                                detectar_saturacion, rachas_identicas, velocidad_en_ventana)
+                                                detectar_saturacion, inicio_divergencia, primer_sostenido,
+                                                rachas_identicas, sumas_por_segundo, tramos_sin_correccion,
+                                                velocidad_en_ventana)
+from vio.pipeline import CABECERA_RECUENTOS, leer_recuentos, linea_recuentos
 
 
 def test_hueco_en_timestamps():
@@ -76,3 +81,56 @@ def test_imagenes_desplazamiento_y_frame_repetido(tmp_path):
     assert res["diferencia"][2] == 0
     assert res["flujo_px"][2] < 0.05
     assert res["ilegibles"] == []
+
+
+def test_pico_suelto_de_velocidad_no_cuenta():
+    t = np.arange(0, 20, 0.05)
+    v = np.full(len(t), 0.2)
+    v[(t > 5) & (t < 5.3)] = 3.0                             # pico de 0,3 s: ruido, no divergencia
+    v[t > 12] = 2.0                                          # a partir de 12 s, sostenida
+    assert primer_sostenido(t, v > 1.0, 2.0) == t[np.flatnonzero(t > 12)[0]]
+
+
+def test_inicio_de_la_divergencia():
+    # Se mueve por la habitación (distancia ~1 m) y a partir de t = 10 s deriva como ½·a·t²
+    t = np.arange(0, 30, 0.05)
+    distancia = 1.0 + 0.3 * np.sin(t)
+    deriva = t > 10
+    distancia[deriva] = (1.0 + 0.3 * np.sin(10.0)) + 0.5 * 0.4 * (t[deriva] - 10) ** 2
+    t_dist, t_inicio = inicio_divergencia(t, distancia, 3.0, 15.0, 0.2)
+    assert 13.0 < t_dist < 13.6                              # 0,84 + ½·0,4·Δt² = 3 m -> Δt ≈ 3,3 s
+    assert abs(t_inicio - 10.0) < 0.1                        # el último mínimo (los valles de antes,
+                                                             # a 0,7 m, son más hondos y no cuentan)
+    assert inicio_divergencia(t, np.ones(len(t)), 3.0, 15.0, 0.2) == (None, None)
+
+
+def test_tramos_sin_correccion():
+    t = np.arange(0, 10, 0.05)
+    usadas = np.full(len(t), 5)
+    usadas[(t >= 2) & (t < 2.4)] = 0                         # 0,4 s: más corto que el mínimo
+    usadas[(t >= 6) & (t < 9)] = 0                           # 3 s solo con IMU
+    tramos = tramos_sin_correccion(t, usadas, 1.0)
+    assert len(tramos) == 1
+    assert np.allclose(tramos[0], [6.0, 8.95])
+
+
+def test_sumas_por_segundo():
+    t = np.array([0.1, 0.5, 1.2, 2.9])
+    centros, sumas = sumas_por_segundo(t, np.array([1, 2, 3, 4]))
+    assert np.allclose(centros, [0.5, 1.5, 2.5]) and list(sumas) == [3, 3, 4]
+
+
+def test_csv_de_recuentos_ida_y_vuelta(tmp_path):
+    P = np.diag(np.arange(1, 16) * 1e-4)
+    r = {"t_ns": 123456789012, "v_w": np.array([3.0, 4.0, 0.0]), "frontend": {"activos": 87},
+         "msckf": {"usadas": 0, "cortas": 2, "sin_paralaje": 1, "reproyeccion": 9, "detras": 0,
+                   "chi2": 4, "quieto": True, "filas": 0, "giro_puro": False}}
+    ruta = tmp_path / "vio_recuentos.csv"
+    ruta.write_text(CABECERA_RECUENTOS + linea_recuentos(r, P), encoding="utf-8")
+    d = leer_recuentos(ruta)
+    assert d["t_ns"][0] == 123456789012 and d["t_ns"].dtype == np.int64
+    assert d["activos"][0] == 87 and d["reproyeccion"][0] == 9 and d["chi2"][0] == 4
+    assert d["quieto"][0] == 1
+    assert d["giro_puro"][0] == 0
+    assert abs(d["v_m_s"][0] - 5.0) < 1e-9
+    assert abs(d["sigma_p_m"][0] - np.sqrt((7 + 8 + 9) * 1e-4)) < 1e-6   # P[6:9, 6:9]

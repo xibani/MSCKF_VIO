@@ -47,7 +47,7 @@ from vio import modelo_camara as mc
 from vio import protocolo
 from vio import vista as vista_vio
 from vio.config import RAIZ_PROYECTO, cargar_config, ruta_config
-from vio.pipeline import CABECERA_POSES, PipelineVio, linea_pose
+from vio.pipeline import CABECERA_POSES, CABECERA_RECUENTOS, PipelineVio, linea_pose, linea_recuentos
 
 ADELANTO_IMU_NS = (
     20_000_000  # en vivo la IMU llega ~20 ms antes que la imagen: igual al reproducir
@@ -406,6 +406,9 @@ def main():
     con_vista = emisor is not None and not args.sin_vista
     salida = open(carpeta / "vio_trayectoria.csv", "w", encoding="utf-8")
     salida.write(CABECERA_POSES)
+    # Diagnóstico: recuentos del MSCKF imagen a imagen (herramientas/diagnostico_grabacion)
+    recuentos = open(carpeta / "vio_recuentos.csv", "w", encoding="utf-8")
+    recuentos.write(CABECERA_RECUENTOS)
     # Etapa 18: el mapa, siempre a disco y, si hay IP, también al PC
     cfg_mapeo = cfgs["vio"]["mapeo"]
     archivo_mapa = None if args.sin_mapa else open(carpeta / cfg_mapeo["archivo"], "wb")
@@ -453,6 +456,11 @@ def main():
                     carpeta / f"vio_trayectoria_{n_prueba}.csv", "w", encoding="utf-8"
                 )
                 salida.write(CABECERA_POSES)
+                recuentos.close()
+                recuentos = open(
+                    carpeta / nombre_de_prueba("vio_recuentos.csv", n_prueba), "w", encoding="utf-8"
+                )
+                recuentos.write(CABECERA_RECUENTOS)
                 # Etapa 19: también un mapa nuevo (otro origen y los ids vuelven a 0)
                 if archivo_mapa is not None:
                     archivo_mapa.close()
@@ -490,6 +498,7 @@ def main():
                     destino,
                 )
             salida.write(linea_pose(r["t_ns"], r["R_w_i"], r["p_w"]))
+            recuentos.write(linea_recuentos(r, pipeline.filtro.P))
             if archivo_mapa is not None:
                 for datos in paquetes_mapa(r, K, dist, cfg_mapeo):
                     protocolo.escribir_paquete(archivo_mapa, datos)
@@ -498,7 +507,7 @@ def main():
             tiempos.append(r["tiempos_ms"])
             # Recuentos del MSCKF sumados desde el último aviso: qué pasa con las pistas
             for clave in ("usadas", "cortas", "sin_triangular", "chi2", "quieto",
-                          "sin_paralaje", "reproyeccion", "detras"):
+                          "sin_paralaje", "reproyeccion", "detras", "giro_puro"):
                 suma_msckf[clave] = suma_msckf.get(clave, 0) + int(r["msckf"][clave])
             suma_msckf["errores_px"] = suma_msckf.get("errores_px", []) + r["msckf"]["errores_px"]
             suma_msckf["imagenes"] = suma_msckf.get("imagenes", 0) + 1
@@ -513,6 +522,7 @@ def main():
                     f" (paralaje {s['sin_paralaje']} reproy {s['reproyeccion']} detrás {s['detras']}"
                     f" err {np.median(s['errores_px']) if s['errores_px'] else 0:.0f} px)"
                     f" chi2 {s['chi2']:3d} | quieto {s['quieto']}/{s['imagenes']}"
+                    f" giro {s['giro_puro']}/{s['imagenes']}"
                     f" | keyframes {pipeline.n_keyframes:3d} | {ms_total:5.1f} ms/imagen"
                 )
                 suma_msckf = {}
@@ -523,6 +533,7 @@ def main():
                     )
                 print(linea)
                 salida.flush()  # al disco cada segundo: por si se desenchufa la Pi
+                recuentos.flush()
                 if archivo_mapa is not None:
                     archivo_mapa.flush()
     except KeyboardInterrupt:
@@ -530,6 +541,7 @@ def main():
     finally:
         fuente.close()  # en vivo: para la IMU y la cámara
         salida.close()
+        recuentos.close()
         if emisor is not None:
             emisor.close()
         if control is not None:

@@ -10,17 +10,23 @@ o los sensores en vivo): el código del filtro es el mismo en los dos casos.
        imagen anterior, medido por el giroscopio.
     4. Etapa 18: puntos para el mapa disperso y, cuando un clon sale de la ventana del
        filtro, quizá un keyframe de mapeo (vio/mapeo.py).
+    5. Etapa 32: ZUPT de giro puro. Si el movimiento de los puntos desde hace unas imágenes se
+       explica con un solo giro de la cámara (y ese giro es el del giroscopio), la cámara casi no
+       se ha desplazado: velocidad casi nula, con una confianza moderada.
 """
 
 import time
+from collections import deque
 
 import numpy as np
 
 from vio import calibracion_imu as ci
+from vio import frontend as fe
 from vio import inicializacion as ini
 from vio import mapeo
 from vio import modelo_camara as mc
 from vio import msckf as ms
+from vio import so3
 from vio.estado import EstadoImu
 from vio.frontend import FrontEnd
 
@@ -53,6 +59,43 @@ def leer_poses(ruta):
     )
 
 
+# Diagnóstico: lo que hace el MSCKF en cada imagen (una fila por imagen, junto a la trayectoria)
+COLUMNAS_RECUENTOS = ("activos", "usadas", "cortas", "sin_paralaje", "reproyeccion", "detras",
+                      "chi2", "quieto", "filas", "giro_puro")
+CABECERA_RECUENTOS = ("#t_ns," + ",".join(COLUMNAS_RECUENTOS)
+                      + ",v_m_s,sigma_v_m_s,sigma_p_m,sigma_theta_grados\n")
+
+
+def linea_recuentos(r, P):
+    """Una fila del CSV de recuentos: lo que devuelve nueva_imagen (r) y la covarianza del filtro.
+
+    sigma_* = raíz de la traza del bloque 3x3 de P (la incertidumbre que el filtro CREE tener):
+    si la trayectoria se va decenas de metros y sigma_p sigue en centímetros, el filtro está
+    sobreconfiado y la prueba chi-cuadrado rechazará las pistas buenas.
+    """
+    n = [r["frontend"]["activos"]] + [int(r["msckf"][c]) for c in COLUMNAS_RECUENTOS[1:]]
+    v = float(np.linalg.norm(r["v_w"]))
+    sigma_v = float(np.sqrt(np.trace(P[ms.V, ms.V])))
+    sigma_p = float(np.sqrt(np.trace(P[ms.P, ms.P])))
+    sigma_th = float(np.degrees(np.sqrt(np.trace(P[ms.TH, ms.TH]))))
+    return (f"{int(r['t_ns'])}," + ",".join(str(int(x)) for x in n)
+            + f",{v:.4f},{sigma_v:.6f},{sigma_p:.6f},{sigma_th:.5f}\n")
+
+
+def leer_recuentos(ruta):
+    """Lee un CSV de recuentos. Devuelve: dict columna -> array (t_ns en int64)."""
+    with open(ruta, encoding="utf-8") as f:
+        nombres = f.readline().lstrip("#").strip().split(",")
+        filas = [linea.strip().split(",") for linea in f if linea.strip()]
+    datos = {}
+    for j, nombre in enumerate(nombres):
+        if nombre == "t_ns":
+            datos[nombre] = np.array([int(fila[j]) for fila in filas], dtype=np.int64)
+        else:
+            datos[nombre] = np.array([float(fila[j]) for fila in filas])
+    return datos
+
+
 def giro_camara(R_w_i_ant, R_w_i_act, R_c_i):
     """Etapa 23: giro de la CÁMARA entre dos instantes, a partir de la orientación de la IMU.
 
@@ -64,6 +107,73 @@ def giro_camara(R_w_i_ant, R_w_i_act, R_c_i):
     Devuelve: (3, 3) R_act_ant, con d_act = R_act_ant · d_ant.
     """
     return R_c_i @ R_w_i_act.T @ R_w_i_ant @ R_c_i.T
+
+
+def giro_que_mejor_explica(d_ant, d_act):
+    """Etapa 32: el giro R que mejor lleva unas direcciones a otras, d_act ≈ R·d_ant.
+
+    d_ant, d_act: (N, 3) direcciones unitarias de los mismos puntos en las dos cámaras.
+    Problema de Wahba: minimizar Σ |d_act - R·d_ant|². Con H = Σ d_ant·d_actᵀ = U·S·Vᵀ (SVD),
+    R = V·diag(1, 1, det(V·Uᵀ))·Uᵀ (el último signo evita una reflexión). Es la misma
+    solución que Kabsch, en cerrado: sin iteraciones.
+    """
+    H = d_ant.T @ d_act                                 # Σ d_ant_k · d_act_kᵀ
+    U, _, Vt = np.linalg.svd(H)
+    signo = np.sign(np.linalg.det(Vt.T @ U.T))
+    return Vt.T @ np.diag([1.0, 1.0, signo]) @ U.T
+
+
+def direcciones(uv, K, dist):
+    """Píxeles (N, 2) -> direcciones unitarias (N, 3) en los ejes de la cámara."""
+    xy = mc.normalizar(uv, K, dist)
+    d = np.column_stack([xy, np.ones(len(xy))])
+    return d / np.linalg.norm(d, axis=1, keepdims=True)
+
+
+def es_giro_puro(uv_ant, uv_act, R_act_ant, K, dist, cfg):
+    """Etapa 32: ¿se ha movido la cámara entre dos imágenes solo girando?
+
+    uv_ant, uv_act: (N, 2) [px] los mismos puntos en la imagen "anterior" y en la actual. En el
+        pipeline, la anterior es la de hace cfg["imagenes_ventana"] imágenes: en una sola imagen
+        (50 ms) la traslación es tan poca que, con la escena a varios metros, se disfraza de un
+        giro de décimas de grado; en 0,25 s ya no.
+    R_act_ant: (3, 3) giro de la cámara medido por el giroscopio (d_act = R_act_ant·d_ant).
+    cfg: sección "giro_puro" de config/vio.yaml.
+
+    Un giro puro mueve todos los puntos igual, estén cerca o lejos: hay un único R que explica
+    todo el movimiento. Una traslación los mueve según su profundidad (los cercanos más), y ningún
+    giro la explica del todo. Pasos:
+      1. Giro que mejor explica los puntos (Wahba), R_vis. Se usa este y no el del giroscopio para
+         medir el resto: así no cuentan como traslación los errores del giroscopio, de t_d o de la
+         extrínseca, que se parecen a un giro pequeño.
+      2. Resto: lo que R_vis no explica, en píxeles. Pequeño -> no hay traslación apreciable.
+      3. R_vis debe parecerse al del giroscopio. Si la escena está a una profundidad casi
+         uniforme, una traslación lateral se puede disfrazar de giro (el resto sale pequeño); pero
+         entonces R_vis no coincide con lo que midió el giroscopio y se descarta.
+      4. Tiene que haber giro de verdad (giro_min_px): sin giro apreciable no hay nada que decidir
+         aquí (si además los puntos no se mueven, ya actúa el ZUPT normal).
+    Devuelve: (bool, dict con n, giro_px, resto_px, diferencia_grados).
+    """
+    info = {"n": len(uv_ant), "giro_px": 0.0, "resto_px": np.inf, "diferencia_grados": np.inf}
+    if len(uv_ant) < cfg["puntos_min"]:
+        return False, info
+    # Cuánto mueve los puntos el giro del giroscopio (lo que "explica" el giro)
+    pred_giroscopio, _ = fe.predecir_con_giro(uv_ant, R_act_ant, K, dist)
+    info["giro_px"] = float(np.median(np.linalg.norm(pred_giroscopio - uv_ant, axis=1)))
+    # 1. El giro que mejor explica el movimiento visto
+    R_vis = giro_que_mejor_explica(direcciones(uv_ant, K, dist), direcciones(uv_act, K, dist))
+    # 2. Lo que ese giro no explica
+    pred_vis, delante = fe.predecir_con_giro(uv_ant, R_vis, K, dist)
+    if not delante.all():
+        return False, info
+    info["resto_px"] = float(np.median(np.linalg.norm(uv_act - pred_vis, axis=1)))
+    # 3. Diferencia entre el giro visto y el medido
+    info["diferencia_grados"] = float(np.degrees(np.linalg.norm(so3.log_so3(R_vis @ R_act_ant.T))))
+    # 4. Decisión
+    solo_gira = (info["giro_px"] >= cfg["giro_min_px"]
+                 and info["resto_px"] < cfg["resto_max_px"]
+                 and info["diferencia_grados"] < cfg["diferencia_max_grados"])
+    return solo_gira, info
 
 
 class PipelineVio:
@@ -90,6 +200,8 @@ class PipelineVio:
         self.problemas = []  # por qué falló el último intento de inicializar
         self.intentos = 0
         self.uv_anterior = {}  # id -> posición [px] de cada punto en la imagen anterior
+        # Etapa 32: las últimas imágenes, (id -> posición [px], R_w_i), para el ZUPT de giro puro
+        self.historial = deque(maxlen=cfgs["vio"]["giro_puro"]["imagenes_ventana"])
         self.R_w_i_ant = None  # etapa 23: orientación de la IMU en la imagen anterior
         self.calib_acc = calib_acc
         self.descartadas = 0  # imágenes anteriores al estado del filtro (relojes mal)
@@ -147,6 +259,26 @@ class PipelineVio:
         if len(desplazamientos) < cfg["puntos_min"]:
             return False
         return float(np.median(desplazamientos)) < cfg["desplazamiento_max_px"]
+
+    def solo_gira(self, R_w_i_act):
+        """Etapa 32: ¿solo ha girado la cámara desde hace imagenes_ventana imágenes?
+
+        R_w_i_act: orientación de la IMU ahora (propagada con el giroscopio, antes de corregir).
+        Compara los puntos de ahora con los de la imagen más antigua del historial, y el giro de
+        la cámara entre las dos (giro_camara) con el que explica su movimiento (es_giro_puro).
+        Devuelve (bool, info). Hasta llenar el historial, no decide.
+        """
+        if len(self.historial) < self.historial.maxlen:
+            return False, {"n": 0}
+        uv_viejas, R_w_i_viejo = self.historial[0]
+        R_act_ant = giro_camara(R_w_i_viejo, R_w_i_act, self.R_c_i)
+        comunes = [(uv_viejas[i], uv) for i, uv in zip(self.frontend.ids, self.frontend.puntos)
+                   if i in uv_viejas]
+        if not comunes:
+            return False, {"n": 0}
+        uv_ant = np.array([c[0] for c in comunes], dtype=float)
+        uv_act = np.array([c[1] for c in comunes], dtype=float)
+        return es_giro_puro(uv_ant, uv_act, R_act_ant, self.K, self.dist, self.cfgs["vio"]["giro_puro"])
 
     # ---------------- Mapa (etapa 18) ----------------
     def _keyframe(self, saliente):
@@ -209,6 +341,7 @@ class PipelineVio:
         # igual, más abajo) para saber cuánto ha girado la cámara desde la imagen anterior.
         # De una imagen a la siguiente la orientación solo cambia integrando el giroscopio
         self.filtro.propagar_hasta(t_ns)
+        R_w_i_propagada = self.filtro.estado.R_w_i.copy()  # etapa 32: antes de corregir con la imagen
         R_act_ant = None
         if self.R_w_i_ant is not None:
             R_act_ant = giro_camara(self.R_w_i_ant, self.filtro.estado.R_w_i, self.R_c_i)
@@ -231,12 +364,21 @@ class PipelineVio:
         self.grises[self.filtro.n_imagenes] = gris  # etapa 18
         est = self.filtro.procesar_imagen(t_ns, ids, xy)
 
-        # 4. Si los puntos no se mueven, además, velocidad nula (etapa 13)
+        # 4. Si los puntos no se mueven, además, velocidad nula (etapa 13).
+        #    Etapa 32: si se mueven, pero solo porque la cámara gira, velocidad CASI nula (con una
+        #    sigma mayor: girando a mano, la cámara siempre se desplaza algo)
         est["quieto"] = self.esta_quieto()
+        est["giro_puro"] = False
+        info_giro = None
+        cfg_giro = self.cfgs["vio"]["giro_puro"]
         if est["quieto"]:
             self.filtro.corregir_reposo(
                 self.cfgs["vio"]["reposo"]["sigma_velocidad_m_s"]
             )
+        elif cfg_giro["activo"]:
+            est["giro_puro"], info_giro = self.solo_gira(R_w_i_propagada)
+            if est["giro_puro"]:
+                self.filtro.corregir_reposo(cfg_giro["sigma_velocidad_m_s"])
         self.uv_anterior = {
             int(i): uv.copy() for i, uv in zip(ids, self.frontend.puntos)
         }
@@ -250,6 +392,8 @@ class PipelineVio:
 
         e = self.filtro.estado
         self.R_w_i_ant = e.R_w_i.copy()  # etapa 23: ya corregida con esta imagen
+        self.historial.append(({int(i): uv.copy() for i, uv in zip(ids, self.frontend.puntos)},
+                               e.R_w_i.copy()))  # etapa 32
         return {
             "t_ns": t_ns,
             "R_w_i": e.R_w_i.copy(),
@@ -260,6 +404,7 @@ class PipelineVio:
             "msckf": est,
             "puntos_mapa": puntos_mapa,
             "keyframe": keyframe,
+            "giro_puro": info_giro,  # etapa 32: giro_px, resto_px, diferencia_grados (o None)
             "tiempos_ms": {
                 "imu": (t1 - t0) / 1e6,
                 "frontend": (t2 - t1) / 1e6,

@@ -15,6 +15,8 @@ seguimiento:
   epsilon: 0.01              # parar cuando la corrección baje de 0,01 px
   ida_vuelta_max_px: 1.0     # seguir hacia atrás debe volver a menos de esto
   margen_borde_px: 10        # media ventana: más cerca del borde, la ventana se sale de la imagen
+  usar_giro: true            # Etapa 31: empezar a buscar cada punto donde lo lleva el giro medido por el giroscopio
+                             # (vio/frontend.predecir_con_giro). false: como antes, desde su posición anterior
 
 geometria:
   umbral_px: 1.0             # error máximo respecto a la matriz esencial (en píxeles)

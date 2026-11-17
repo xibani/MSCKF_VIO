@@ -7,5 +7,9 @@ gauss_newton:
 fiabilidad:
   paralaje_min_grados: 1.0   # ángulo mínimo entre los rayos: por debajo, la profundidad no está determinada
   profundidad_min_m: 0.1     # delante de TODAS las cámaras y a más de esto
-  error_max_px: 3.0          # error de reproyección máximo en cualquier imagen (≈ 3 sigma con 1 px de ruido)
+  # PRUEBA 2026-11-17 (antes 3.0): con giros rápidos (49-52 s de 20261116_162115) las pistas
+  # llegan con 7-8 px y se tiraban aquí, antes de la prueba chi-cuadrado del MSCKF, que es la que
+  # tiene en cuenta la incertidumbre del filtro. Con 8 px decide el chi-cuadrado.
+  # Volver a 3.0 si no mejora.
+  error_max_px: 8.0          # error de reproyección máximo en cualquier imagen (≈ 3 sigma con 1 px de ruido)
   observaciones_min: 2       # con una sola imagen no hay triangulación posible
