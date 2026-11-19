@@ -9,7 +9,7 @@ tablero:
 aprilgrid:                 # etapa 7.4: plantilla de Kalibr (datos/kalibr/target.pdf), tags AprilTag 36h11
   tags_x: 6                # tags en horizontal
   tags_y: 6                # tags en vertical
-  lado_tag_m: 0.029        # lado del cuadrado negro de un tag, MEDIDO en el papel [m]
+  lado_tag_m: 0.0275        # lado del cuadrado negro de un tag, MEDIDO en el papel [m]
                            # (6 tags + 5 huecos de una fila = 7,5 lados: mide la fila y divide)
   espacio_relativo: 0.3    # hueco entre tags / lado del tag (0,72 / 2,4 cm en el PDF)
   bits_borde: 2            # Kalibr dibuja los tags con un borde negro de 2 celdas
