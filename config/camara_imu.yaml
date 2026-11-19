@@ -1,18 +1,37 @@
 # config/camara_imu.yaml — Extrínseca cámara-IMU (T_c_i) y desfase temporal (t_d).
-# PROVISIONAL: cámara mirando hacia el eje x de la IMU, 3 cm por delante y 1 cm por encima,
-# y sin desfase. SUSTITUIR por el resultado de Kalibr (etapa 7.4).
+# Generado por herramientas/calibrar_camara_imu.py (etapa 7.4): R_i_c y t_d calibrados
+# con el giroscopio; p_i_c_m sigue siendo la medida con regla.
 # Columnas de R_i_c = ejes x, y, z de la cámara expresados en ejes de la IMU.
-R_i_c:                         # ortonormalizada (la salida de la herramienta se imprime con 4 decimales)
-  - [-0.000494, +0.051101, +0.998693]
-  - [-0.999981, +0.006083, -0.000806]
-  - [-0.006116, -0.998675, +0.051097]
-# R_i_c:
-#   - [0, 0, 1]
-#   - [-1, 0, 0]
-#   - [0, -1, 0]
-p_i_c_m: [0.024, 0.0, 0.035]   # posición de la cámara en ejes de la IMU [m]
-t_d_ns: 9000000                # t_cámara_corregido = t_cámara + t_d  [ns]
+# t_cámara_corregido = t_cámara + t_d  [ns]
+R_i_c:
+- - 0.004896249331317258
+  - 0.04860221371913149
+  - 0.9988062132186029
+- - -0.9994448302353169
+  - -0.03267900024517251
+  - 0.006489549974748987
+- - 0.03295539498146437
+  - -0.9982834806629711
+  - 0.048415226706479256
+p_i_c_m:
+- 0.024
+- 0.0
+- 0.035
+t_d_ns: 11372641
 info:
   provisional: false
-  t_d: "herramientas/comprobar_camara_imu.py, datos 20261116_162115 (compatible 0 - 18,5 ms)"
-  R_i_c: "herramientas/comprobar_camara_imu.py, datos 20261116_162115"
+  metodo: 'etapa 7.4: giroscopio frente a postura del tablero (R_i_c y t_d); p_i_c_m
+    con regla'
+  grabaciones:
+  - datos\kalibr\20261119_123630
+  - datos\kalibr\20261119_124815
+  - datos\kalibr\20261119_125135
+  rms_dps:
+  - 10.021
+  - 10.463
+  - 9.939
+  t_d_ms:
+  - 2.215
+  - 11.531
+  - 11.373
+  fecha: '2026-11-19T13:57:18'
