@@ -1,0 +1,94 @@
+# config/vins.yaml — VINS-Mono propio (etapas 33–40)
+
+# ---------------------------------------------------------------------
+# Etapa 33 — Preintegración de la IMU entre dos keyframes
+# ---------------------------------------------------------------------
+preintegracion:
+  # Densidades de ruido medidas por varianza de Allan (etapa 7.3), en config/<fichero_ruido>.yaml
+  fichero_ruido: imu_ruido
+  # Multiplica las DENSIDADES (σ), no las varianzas: varianza × factor².
+  # Allan se mide en reposo y es optimista para una placa llevada a mano: empezar con 5–10.
+  factor_inflado: 5.0
+  # Si el sesgo estimado se aleja más que esto del sesgo con el que se integró, la corrección
+  # de primer orden deja de ser fiable y se vuelve a integrar con las muestras guardadas
+  umbral_reintegrar_bg_rad_s: 0.01   # |δb_g| [rad/s]  (~0,6 °/s)
+  umbral_reintegrar_ba_m_s2: 0.10    # |δb_a| [m/s²]
+
+# ---------------------------------------------------------------------
+# Etapa 34 — Factores visuales, gauge y optimizador en lote
+# ---------------------------------------------------------------------
+visual:
+  ruido_px: 1.5                # σ de cada observación [px] (VINS-Mono usa 1,5 px)
+  perdida: huber               # huber | cauchy | ninguna  (VINS-Mono: cauchy con umbral 1)
+  umbral_perdida: 2.0          # en unidades de σ: por encima, la pérdida deja de ser cuadrática
+  profundidad_min_m: 0.1       # observaciones más cerca (o detrás) se descartan; λ <= 1/esto
+  profundidad_max_m: 50.0      # λ >= 1/esto (puntos casi en el infinito)
+
+gauge:
+  # Prior sobre el rumbo y la posición del keyframe 0: fija los 4 grados sin observar
+  sigma_rumbo_rad: 1.0e-5
+  sigma_posicion_m: 1.0e-5
+
+optimizador:
+  iteraciones_max: 10          # pasos aceptados de Levenberg-Marquardt
+  intentos_max: 10             # valores de μ que se prueban en cada iteración
+  mu_inicial: 1.0e-4           # amortiguamiento: H + μ·diag(H)
+  factor_subir: 10.0           # paso rechazado: μ ← μ·10
+  factor_bajar: 10.0           # paso aceptado: μ ← μ/10
+  mu_min: 1.0e-10
+  tolerancia_paso: 1.0e-8      # |δx|∞ por debajo: convergido
+  tolerancia_coste_rel: 1.0e-6 # bajada relativa del coste por debajo: convergido
+
+# ---------------------------------------------------------------------
+# Etapa 35 — Ventana deslizante y marginalización
+# ---------------------------------------------------------------------
+ventana:
+  tamano: 10                   # N: la ventana guarda N + 1 frames (como VINS-Mono)
+  iteraciones_max: 5           # de Levenberg-Marquardt por imagen (arranca de la predicción de la IMU)
+  paralaje_keyframe_px: 10.0   # paralaje medio, sin el giro, del 2.º más reciente respecto al anterior
+  pistas_min_keyframe: 20      # menos pistas comunes que esto: también es keyframe
+  paralaje_min_triangular_grados: 1.0   # ángulo mínimo entre rayos para triangular un punto nuevo
+
+inicial:
+  # Prior del primer frame (las mismas σ que P0 del MSCKF, config/msckf.yaml)
+  sigma_orientacion_rad: 0.01
+  sigma_velocidad_m_s: 0.05
+  sigma_posicion_m: 0.001
+  sigma_sesgo_gir_rad_s: 0.01
+  sigma_sesgo_acc_m_s2: 0.1
+
+marginalizacion:
+  # Autovalores de H* (y de H_mm) por debajo de ε·máx cuentan como 0 (direcciones sin información)
+  eps_autovalor_relativo: 1.0e-12
+
+# ---------------------------------------------------------------------
+# Etapa 36 — Inicialización visual-inercial
+# ---------------------------------------------------------------------
+inicializacion:
+  # SfM solo visual
+  paralaje_min_px: 30.0          # paralaje medio SIN GIRO entre el frame l y el más reciente (VINS: 30)
+  correspondencias_min: 20       # puntos comunes entre l y el más reciente (VINS: 20)
+  umbral_ransac_px: 2.0          # distancia a la epipolar / reproyección en RANSAC [px] (~2σ: con 1 px
+                                 # descartaba un tercio de los buenos y la esencial salía a 11° de la verdad)
+  confianza_ransac: 0.999
+  pose_relativa: giro            # giro: rotación del giroscopio + traslación lineal (2 puntos) | esencial (5 puntos)
+  iteraciones_ransac: 200        # de la traslación con el giro
+  semilla_ransac: 0              # RANSAC reproducible
+  inliers_min: 15                # de la pose relativa l–n
+  diferencia_giro_max_grados: 3.0   # (solo con esencial) su rotación frente a la del giroscopio
+  puntos_pnp_min: 10             # puntos con 3D para el PnP de un frame
+  paralaje_min_triangular_grados: 1.0
+  iteraciones_ba: 10             # ajuste de haces solo visual
+  error_ba_max_px: 2.0           # RMS de reproyección tras el ajuste
+  sigma_fijo: 1.0e-6             # gauge del ajuste: pose de l y distancia l–n
+  sigma_libre: 1.0e6             # lo que no se fija (información ~0)
+  # Alineación con la IMU
+  iteraciones_sesgo_giro: 2
+  excitacion_min_m_s2: 0.10      # desviación típica de Δv/Δt entre frames: filtro rápido del reposo (~0,02).
+                                 # VINS usa 0,25 pero solo AVISA. La decisión de verdad es incertidumbre_escala_max
+  tolerancia_gravedad_m_s2: 0.5  # | |g| − 9,81 | antes del refinado (VINS: 0,5)
+  iteraciones_gravedad: 4
+  ajuste_visual_inercial: true   # paso 6: ajuste conjunto de la ventana tras la alineación (escala, g y b_a)
+  iteraciones_ajuste_vi: 15
+  incertidumbre_escala_max: 0.03 # σ_L/L tras el ajuste: por encima, la escala no está determinada
+  residuo_max: 0.02              # RMS del sistema lineal tras refinar [m y m/s] (ver tests)
