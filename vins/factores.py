@@ -333,3 +333,59 @@ def sigmas_iniciales(cfg_ini):
     return np.array([cfg_ini["sigma_orientacion_rad"]] * 3 + [cfg_ini["sigma_velocidad_m_s"]] * 3
                     + [cfg_ini["sigma_posicion_m"]] * 3 + [cfg_ini["sigma_sesgo_gir_rad_s"]] * 3
                     + [cfg_ini["sigma_sesgo_acc_m_s2"]] * 3)
+
+
+# =====================================================================
+# Paso 37.1 — Velocidad nula (ZUPT de las etapas 13 y 32 como factor)
+# =====================================================================
+class FactorVelocidadNula:
+    """"La IMU está quieta" (o casi, si solo gira) en un keyframe: r = v (3), W = I/σ².
+
+    El pipeline lo pide con corregir_reposo(σ) tras procesar la imagen; la ventana lo guarda con
+    el frame y lo usa en todas las optimizaciones mientras el frame siga en ella (al marginalizar
+    el frame pasa al prior; al descartarlo se tira, como sus observaciones).
+    """
+
+    def __init__(self, k, sigma):
+        self.indices = [k]
+        self.W = np.eye(3) / sigma ** 2
+
+    def informacion(self):
+        return self.W
+
+    def evaluar_bloques(self, estados):
+        J = np.zeros((3, DIM))
+        J[:, V] = np.eye(3)
+        return estados[0].v_w.copy(), [J]
+
+
+# =====================================================================
+# Paso 37.2 — Prior de arranque tras la inicialización visual-inercial
+# =====================================================================
+class FactorPriorArranque:
+    """Lo que se sabe del primer frame tras la inicialización de la etapa 36:
+        - rumbo y posición: los define él (el mundo se fija ahí) → σ del gauge, muy pequeñas;
+        - sesgos: un prior débil (las σ de P0);
+        - inclinación y velocidad: nada (las dan los datos de la ventana).
+    Residuo (10): [e_zᵀ·Log(R·R0ᵀ), p − p0, b_g − b_g0, b_a − b_a0].
+    """
+
+    def __init__(self, k, x0, sigma_rumbo, sigma_posicion, sigma_bg, sigma_ba):
+        self.indices = [k]
+        self.x0 = x0.copia()
+        self.W = np.diag([1.0 / sigma_rumbo ** 2] + [1.0 / sigma_posicion ** 2] * 3
+                         + [1.0 / sigma_bg ** 2] * 3 + [1.0 / sigma_ba ** 2] * 3)
+
+    def informacion(self):
+        return self.W
+
+    def evaluar_bloques(self, estados):
+        e = estados[0]
+        phi = so3.log_so3(e.R_w_i @ self.x0.R_w_i.T)
+        r = np.concatenate([[phi[2]], e.p_w - self.x0.p_w, e.b_g - self.x0.b_g, e.b_a - self.x0.b_a])
+        J = np.zeros((10, DIM))
+        J[0, TH] = E_Z @ jacobiano_derecho_inv(phi) @ self.x0.R_w_i
+        J[1:4, P] = np.eye(3)
+        J[4:7, BG] = np.eye(3)
+        J[7:10, BA] = np.eye(3)
+        return r, [J]

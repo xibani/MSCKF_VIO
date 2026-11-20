@@ -13,6 +13,10 @@ o los sensores en vivo): el código del filtro es el mismo en los dos casos.
     5. Etapa 32: ZUPT de giro puro. Si el movimiento de los puntos desde hace unas imágenes se
        explica con un solo giro de la cámara (y ese giro es el del giroscopio), la cámara casi no
        se ha desplazado: velocidad casi nula, con una confianza moderada.
+    6. Etapa 37: el estimador puede ser el MSCKF o VINS (vins/estimador.py, misma interfaz), según
+       config/vio.yaml (estimador.tipo). VINS arranca en reposo (como el MSCKF) o con la
+       inicialización visual-inercial de la etapa 36: entonces se crea con la primera muestra de
+       la IMU, el front-end trabaja desde la primera imagen y no hay pose hasta que inicializa.
 """
 
 import time
@@ -210,6 +214,24 @@ class PipelineVio:
         self.grises = {}
         self.selector = mapeo.SelectorKeyframes(cfgs["vio"]["mapeo"])
         self.n_keyframes = 0
+        # Etapa 37: qué estimador (si vio.yaml no dice nada, el MSCKF, como siempre)
+        cfg_est = cfgs["vio"].get("estimador", {})
+        self.tipo_estimador = cfg_est.get("tipo", "msckf")
+        self.arranque_vins = cfg_est.get("inicializacion_vins", "visual_inercial")
+        if self.tipo_estimador not in ("msckf", "vins"):
+            raise ValueError(f"estimador.tipo desconocido: {self.tipo_estimador}")
+
+    # ---------------- Etapa 37: VINS ----------------
+    def _crear_vins(self, t_ns, w_m, a_m, estado=None):
+        """VinsEstimador con la configuración de config/vins.yaml (y el estado, si arranca en reposo)."""
+        from vins.estimador import VinsEstimador            # aquí: solo hace falta con VINS
+        from vins.factores import sigmas_iniciales
+        from vins.preintegracion import ruido_desde_config
+        from vio.config import cargar_config
+        cfg_vins = self.cfgs["vins"] if "vins" in self.cfgs else cargar_config("vins")
+        sigmas = sigmas_iniciales(cfg_vins["inicial"]) if estado is not None else None
+        return VinsEstimador(t_ns, w_m, a_m, self.R_c_i, self.t_c_i, self.K[0, 0], cfg_vins,
+                             ruido_desde_config(cfg_vins["preintegracion"]), estado=estado, sigmas0=sigmas)
 
     # ---------------- Inicialización ----------------
     def _inicializar(self):
@@ -228,6 +250,10 @@ class PipelineVio:
         # quieto; sesgo del giroscopio = su media en reposo; el del acelerómetro, 0
         R0 = ini.rotacion_desde_gravedad(reposo["a_media"])
         estado = EstadoImu(R0, np.zeros(3), np.zeros(3), reposo["b_g"], np.zeros(3))
+        if self.tipo_estimador == "vins":                    # etapa 37: VINS arrancando en reposo
+            self.filtro = self._crear_vins(int(t[-1]), w[-1], a[-1], estado)
+            self.reposo = []
+            return
         P0 = ms.covarianza_inicial(self.cfgs["msckf"]["inicial"])
         self.filtro = ms.Msckf(
             estado,
@@ -307,6 +333,11 @@ class PipelineVio:
         a_m = np.asarray(a_m, dtype=float)
         if self.calib_acc is not None:
             a_m = ci.corregir_acelerometro(a_m, self.calib_acc[0], self.calib_acc[1])
+        if self.filtro is None and self.tipo_estimador == "vins" and self.arranque_vins == "visual_inercial":
+            # Etapa 37: VINS con inicialización visual-inercial: el estimador se crea ya y él
+            # decide cuándo arranca (no hace falta estar quieto)
+            self.filtro = self._crear_vins(int(t_ns), np.asarray(w_m, dtype=float), a_m)
+            return
         if self.filtro is None:
             self.reposo.append(
                 (int(t_ns), np.asarray(w_m, dtype=float), np.asarray(a_m, dtype=float))
@@ -361,8 +392,16 @@ class PipelineVio:
         t2 = time.perf_counter_ns()
 
         # 3. MSCKF (etapa 12): propagar hasta la imagen, clonar, corregir
-        self.grises[self.filtro.n_imagenes] = gris  # etapa 18
+        listo = getattr(self.filtro, "inicializado", True)    # etapa 37: VINS aún sin inicializar
+        if listo:
+            self.grises[self.filtro.n_imagenes] = gris  # etapa 18
         est = self.filtro.procesar_imagen(t_ns, ids, xy)
+        if not getattr(self.filtro, "inicializado", True):
+            # Etapa 37: VINS buscando una ventana que inicialice: sin pose todavía
+            self.uv_anterior = {int(i): uv.copy() for i, uv in zip(ids, self.frontend.puntos)}
+            self.R_w_i_ant = self.filtro.estado.R_w_i.copy()
+            self.ultimo_intento = est.get("motivo_inicializacion")
+            return None
 
         # 4. Si los puntos no se mueven, además, velocidad nula (etapa 13).
         #    Etapa 32: si se mueven, pero solo porque la cámara gira, velocidad CASI nula (con una

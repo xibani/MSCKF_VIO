@@ -48,6 +48,7 @@ ventana:
   paralaje_keyframe_px: 10.0   # paralaje medio, sin el giro, del 2.º más reciente respecto al anterior
   pistas_min_keyframe: 20      # menos pistas comunes que esto: también es keyframe
   paralaje_min_triangular_grados: 1.0   # ángulo mínimo entre rayos para triangular un punto nuevo
+  rechazo_px: 4.0              # etapa 37: observación con más error de reproyección tras optimizar: fuera
 
 inicial:
   # Prior del primer frame (las mismas σ que P0 del MSCKF, config/msckf.yaml)
@@ -92,3 +93,12 @@ inicializacion:
   iteraciones_ajuste_vi: 15
   incertidumbre_escala_max: 0.03 # σ_L/L tras el ajuste: por encima, la escala no está determinada
   residuo_max: 0.02              # RMS del sistema lineal tras refinar [m y m/s] (ver tests)
+
+# ---------------------------------------------------------------------
+# Etapa 37 — Estimador en el pipeline (vins/estimador.py)
+# ---------------------------------------------------------------------
+estimador:
+  intervalo_inicializacion_s: 0.1  # separación entre frames candidatos para inicializar
+  frames_inicializacion: 11        # 11 frames x 0,1 s = ventanas de 1 s (como en los tests de la 36)
+  reintento_s: 0.25                # entre dos intentos de inicializar
+  covarianza_en_recuentos: true    # σ de vio_recuentos.csv (una linealización más por imagen)

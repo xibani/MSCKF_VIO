@@ -27,6 +27,10 @@ FAST + Lucas-Kanade. Solo en el PC (necesita PyTorch) y pensado para grabaciones
     python -m apps.pi_vio --grabacion datos/sim_textura --sin-red --frontend lightglue
 La trayectoria estimada se guarda en vio_trayectoria.csv (dentro de la grabación, o en
 datos/vio_AAAAMMDD_HHMMSS/ en vivo).
+Etapa 37: --estimador vins usa VINS (vins/estimador.py) en lugar del MSCKF (por defecto, el de
+config/vio.yaml, estimador.tipo). Con la inicialización visual-inercial (la de por defecto) no
+hace falta estar quieto: hay que mover la placa (con algo de vaivén) hasta "VIO EN MARCHA".
+    python -m apps.pi_vio --grabacion datos/X --sin-red --estimador vins
 """
 
 import argparse
@@ -332,6 +336,12 @@ def main():
         help="puerto UDP de las órdenes del visor (0: ninguno)",
     )
     parser.add_argument(
+        "--estimador",
+        choices=("msckf", "vins"),
+        default=None,
+        help="etapa 37: msckf o vins (por defecto, estimador.tipo de config/vio.yaml)",
+    )
+    parser.add_argument(
         "--frontend",
         choices=("klt", "lightglue"),
         default="klt",
@@ -344,8 +354,17 @@ def main():
     # --- 1. Configuración ---
     cfgs = {
         nombre: cargar_config(nombre)
-        for nombre in ("vio", "frontend", "msckf", "triangulacion")
+        for nombre in ("vio", "frontend", "msckf", "triangulacion", "vins")
     }
+    if args.estimador is not None:                    # etapa 37
+        cfgs["vio"].setdefault("estimador", {})["tipo"] = args.estimador
+    cfg_est = cfgs["vio"].get("estimador", {})
+    print(f"Estimador: {cfg_est.get('tipo', 'msckf')}")
+    # Etapa 37: con VINS y la inicialización visual-inercial hay que MOVER la placa para arrancar
+    vins_en_movimiento = (cfg_est.get("tipo") == "vins"
+                          and cfg_est.get("inicializacion_vins", "visual_inercial") == "visual_inercial")
+    aviso_arranque = ("MUEVE la placa (con algo de vaivén) hasta que aparezca VIO EN MARCHA..."
+                      if vins_en_movimiento else "QUIETO hasta que aparezca VIO EN MARCHA...")
     K, dist, _ = mc.cargar_intrinsecos()
     ext = cargar_config("camara_imu")
     R_c_i = np.array(ext["R_i_c"], dtype=float).T
@@ -398,7 +417,7 @@ def main():
         fuente = eventos_en_vivo(
             cargar_config("imu"), cargar_config("camara"), cfgs["vio"], contadores
         )
-        print("QUIETO hasta que aparezca VIO EN MARCHA...")
+        print(aviso_arranque)
     emisor = None if args.sin_red else socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     destino = (args.ip, cfg_red["puerto"])
     cfg_vista = cfgs["vio"]["vista"]
@@ -471,7 +490,7 @@ def main():
                 pipeline = pipeline_nuevo()
                 t_aviso_ns, intentos_vistos, suma_msckf = None, 0, {}
                 print(
-                    f"Reiniciado desde el visor (prueba {n_prueba}): QUIETO hasta VIO EN MARCHA..."
+                    f"Reiniciado desde el visor (prueba {n_prueba}): {aviso_arranque}"
                 )
             if n_imagenes == 0:  # etapa 19: al arrancar, por si pc_mapa ya tenía otro mapa
                 avisar_prueba(emisor, destino_mapa, evento[1], n_prueba)
@@ -482,6 +501,12 @@ def main():
                     emisor, destino_vista, evento[1], evento[2], pipeline, r, cfg_vista
                 )
             if r is None:
+                # Etapa 37: VINS aún inicializando: avisar de por qué se rechaza cada intento
+                motivo = getattr(pipeline, "ultimo_intento", None)
+                if motivo and motivo not in ("esperando", "acumulando frames", "esperando reintento") \
+                        and motivo != getattr(pipeline, "_motivo_avisado", None):
+                    print(f"Inicializando VINS: {motivo}")
+                    pipeline._motivo_avisado = motivo
                 continue
             if t_aviso_ns is None:
                 print(

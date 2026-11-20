@@ -72,6 +72,18 @@ class VentanaDeslizante:
         w_m, a_m: muestra de la IMU en t_ns. R_c_i, t_c_i: extrínseca T_c_i (como el MSCKF).
         cfg_vins: config/vins.yaml. ruido_imu: densidades para la preintegración.
         """
+        self._configurar(R_c_i, t_c_i, focal_px, cfg_vins, ruido_imu, g_w)
+        self.sigmas0 = np.asarray(sigmas0, dtype=float)
+
+        # IMU: misma semántica que Msckf.anadir_imu / propagar_hasta
+        self.t_ns = int(t_ns)
+        self.w_ant = np.array(w_m, dtype=float)
+        self.a_ant = np.array(a_m, dtype=float)
+        self.estado_ref = estado.copia()          # estado en t_ns, antes del primer frame
+        self.pre = Preintegracion(estado.b_g, estado.b_a, ruido_imu)
+
+    def _configurar(self, R_c_i, t_c_i, focal_px, cfg_vins, ruido_imu, g_w):
+        """Lo común a los dos constructores: configuración y ventana vacía."""
         self.cfg = cfg_vins
         self.cfg_v = cfg_vins["ventana"]
         self.N = self.cfg_v["tamano"]
@@ -84,14 +96,6 @@ class VentanaDeslizante:
         self.t_c_i = np.asarray(t_c_i, dtype=float)
         self.R_i_c = self.R_c_i.T
         self.p_i_c = -self.R_c_i.T @ self.t_c_i
-        self.sigmas0 = np.asarray(sigmas0, dtype=float)
-
-        # IMU: misma semántica que Msckf.anadir_imu / propagar_hasta
-        self.t_ns = int(t_ns)
-        self.w_ant = np.array(w_m, dtype=float)
-        self.a_ant = np.array(a_m, dtype=float)
-        self.estado_ref = estado.copia()          # estado en t_ns, antes del primer frame
-        self.pre = Preintegracion(estado.b_g, estado.b_a, ruido_imu)
 
         self.frames = []          # del más antiguo al más nuevo
         self.pres = []            # pres[k]: de frames[k] a frames[k + 1]
@@ -100,6 +104,55 @@ class VentanaDeslizante:
         self.prior_ids = []       # ids de los frames que toca el prior
         self.siguiente_id = 0
         self.descartes_en_prior = 0   # veces que el 2.º más reciente estaba en el prior (para los tests)
+        self.zupt = {}            # etapa 37: id de frame -> σ de su factor de velocidad nula
+
+    @classmethod
+    def desde_inicializacion(cls, res, frames_ini, ids_frames, t_ns, w_m, a_m, R_c_i, t_c_i, focal_px,
+                             cfg_vins, ruido_imu, g_w=GRAVEDAD_W):
+        """Etapa 37: la ventana que deja una inicialización visual-inercial aceptada (etapa 36).
+
+        res: lo que devuelve inicializacion.inicializar (estados, puntos, pres).
+        frames_ini: los frames de la inicialización (.t_ns, .obs). ids_frames: el id de cada uno
+        (el número de imagen, como en el pipeline). t_ns, w_m, a_m: instante del último frame y la
+        última muestra de la IMU recibida (la IMU sigue desde ahí).
+        Prior: FactorPriorArranque en el primer frame (rumbo y posición los define él; sesgos con
+        las σ de P0). Los puntos sin 3D de la inicialización entran como pendientes.
+        """
+        v = cls.__new__(cls)
+        v._configurar(R_c_i, t_c_i, focal_px, cfg_vins, ruido_imu, g_w)
+        v.t_ns = int(t_ns)
+        v.w_ant = np.array(w_m, dtype=float)
+        v.a_ant = np.array(a_m, dtype=float)
+        v.estado_ref = res["estados"][0].copia()
+        v.sigmas0 = fa.sigmas_iniciales(cfg_vins["inicial"])
+
+        v.frames = [Frame(int(i), int(f.t_ns), e.copia(), dict(f.obs))
+                    for i, f, e in zip(ids_frames, frames_ini, res["estados"])]
+        v.pres = [pre.copia() for pre in res["pres"]]
+        v.pre = Preintegracion(v.frames[-1].estado.b_g, v.frames[-1].estado.b_a, ruido_imu)
+        # Puntos: los de la inicialización (con θ) y los demás vistos, pendientes de triangular
+        for k, f in enumerate(v.frames):
+            for id_p, xy in f.obs.items():
+                if id_p in v.puntos:
+                    v.puntos[id_p].obs[f.id] = xy
+                elif id_p in res["puntos"] and res["puntos"][id_p][0] == k:
+                    h, xy_h, theta = res["puntos"][id_p]
+                    v.puntos[id_p] = PuntoVentana(id_p, f.id, xy_h, theta.copy(), {f.id: xy})
+                elif id_p not in res["puntos"]:
+                    v.puntos[id_p] = PuntoVentana(id_p, f.id, xy, None, {f.id: xy})
+        cfg_ini = cfg_vins["inicial"]
+        v.prior = fa.FactorPriorArranque(0, v.frames[0].estado, cfg_vins["gauge"]["sigma_rumbo_rad"],
+                                         cfg_vins["gauge"]["sigma_posicion_m"],
+                                         cfg_ini["sigma_sesgo_gir_rad_s"], cfg_ini["sigma_sesgo_acc_m_s2"])
+        v.prior_ids = [v.frames[0].id]
+        v.siguiente_id = v.frames[-1].id + 1
+        return v
+
+    def corregir_reposo(self, sigma_v):
+        """Etapa 37: ZUPT como factor de velocidad nula en el frame más reciente (se usa desde la
+        siguiente optimización y mientras el frame siga en la ventana)."""
+        if self.frames:
+            self.zupt[self.frames[-1].id] = float(sigma_v)
 
     @property
     def estado(self):
@@ -177,29 +230,38 @@ class VentanaDeslizante:
         es_kf, paralaje_px, comunes = self._segundo_es_keyframe()
 
         # 4. Triangular los puntos nuevos y optimizar
-        triangulados = self._triangular_pendientes()
+        tri_cuentas = self._triangular_pendientes()
         informe = {"iteraciones": 0, "coste_final": 0.0}
+        filas = 0
+        activos = 0
         if len(self.frames) >= 2:
             prob, ids_puntos = self._problema()
+            activos = prob.n_puntos
+            filas = 2 * (len(prob.factores_visuales) + prob.n_puntos)
             informe = self.opt.optimizar(prob, iteraciones_max=self.cfg_v["iteraciones_max"])
             self._guardar(prob, ids_puntos)
 
-        # 5. Ventana llena: marginalizar el más antiguo o descartar el segundo más reciente
-        marginalizacion = None
+        # 5. Etapa 37: observaciones atípicas (error de reproyección alto tras optimizar)
+        rechazadas, errores_px = self._rechazar_atipicos()
+
+        # 6. Ventana llena: marginalizar el más antiguo o descartar el segundo más reciente
+        marginalizacion, saliente, puntos_mapa = None, None, []
         if len(self.frames) > self.N:
             if es_kf:
-                self._marginalizar_antiguo()
+                saliente, puntos_mapa = self._marginalizar_antiguo()
                 marginalizacion = "antiguo"
             else:
                 self._descartar_segundo()
                 marginalizacion = "segundo"
 
-        activos = sum(1 for p in self.puntos.values() if p.theta is not None and len(p.obs) >= 2)
         return {"frames": len(self.frames), "puntos_activos": activos,
                 "pendientes": sum(1 for p in self.puntos.values() if p.theta is None),
-                "triangulados": triangulados, "keyframe": es_kf, "paralaje_px": paralaje_px,
+                "triangulados": tri_cuentas["triangulados"], "tri": tri_cuentas,
+                "keyframe": es_kf, "paralaje_px": paralaje_px,
                 "pistas_comunes": comunes, "marginalizacion": marginalizacion,
                 "iteraciones": informe["iteraciones"], "coste": informe["coste_final"],
+                "filas": filas, "rechazadas": rechazadas, "errores_px": errores_px,
+                "saliente": saliente, "puntos_mapa": puntos_mapa,
                 "tiempo_ms": 1000.0 * (time.perf_counter() - t0)}
 
     # =================================================================
@@ -213,6 +275,11 @@ class VentanaDeslizante:
         if len(self.frames) < 3:
             return True, 0.0, 0
         a, b = self.frames[-3], self.frames[-2]
+        # Etapa 37: un frame con ZUPT se queda (se marginalizará, y su "v = 0" pasará al prior).
+        # Si se descartara, su factor se tiraría con él: en reposo (sin paralaje, todos se
+        # descartaban) VINS derivaba 2 cm en 3 s y el MSCKF, con un ZUPT por imagen, 0,01 cm
+        if b.id in self.zupt:
+            return True, 0.0, 0
         comunes = [i for i in a.obs if i in b.obs]
         if len(comunes) < self.cfg_v["pistas_min_keyframe"]:
             return True, 0.0, len(comunes)
@@ -232,29 +299,68 @@ class VentanaDeslizante:
     def _triangular_pendientes(self):
         """DLT (etapa 9) con las poses actuales de todos los frames que ven el punto; se acepta
         si el ángulo entre rayos llega al mínimo y queda delante de todas las cámaras.
-        Devuelve: número de puntos triangulados."""
+        Devuelve: dict de recuentos (triangulados, cortas = una sola observación, sin_paralaje,
+        detras = detrás de alguna cámara o demasiado lejos)."""
         z_min = self.cfg["visual"]["profundidad_min_m"]
         z_max = self.cfg["visual"]["profundidad_max_m"]
-        n = 0
+        cuentas = {"triangulados": 0, "cortas": 0, "sin_paralaje": 0, "detras": 0}
         for p in self.puntos.values():
-            if p.theta is not None or len(p.obs) < 2:
+            if p.theta is not None:
+                continue
+            if len(p.obs) < 2:
+                cuentas["cortas"] += 1
                 continue
             ids_f = list(p.obs)
             poses = [self.pose_camara(self._frame(i).estado) for i in ids_f]
             xy = np.array([p.obs[i] for i in ids_f])
             if tri.angulo_paralaje(poses, xy) < self.cfg_v["paralaje_min_triangular_grados"]:
+                cuentas["sin_paralaje"] += 1
                 continue
             p_w = tri.triangular_lineal(poses, xy)
             if p_w is None:
+                cuentas["sin_paralaje"] += 1
                 continue
             profundidades = [tri.transformar(R, t, p_w)[2] for R, t in poses]
             z_ancla = profundidades[ids_f.index(p.ancla)]
             if min(profundidades) < z_min or z_ancla > z_max:
+                cuentas["detras"] += 1
                 continue
             # Rayo inicial = la observación en el ancla; ρ de la triangulación
             p.theta = np.array([p.xy_ancla[0], p.xy_ancla[1], 1.0 / z_ancla])
-            n += 1
-        return n
+            cuentas["triangulados"] += 1
+        return cuentas
+
+    # =================================================================
+    # Paso 37.3 — Observaciones atípicas
+    # =================================================================
+    def _rechazar_atipicos(self):
+        """Tras optimizar: quita las observaciones con error de reproyección > rechazo_px (o
+        detrás de la cámara). Si la atípica es la del ancla, el punto entero (su rayo es esa
+        observación). VINS hace algo parecido (outlierRejection, con el error medio del punto).
+        Devuelve: (número de observaciones quitadas, sus errores [px])."""
+        umbral = self.cfg_v["rechazo_px"]
+        z_min = self.cfg["visual"]["profundidad_min_m"]
+        errores, quitadas = [], 0
+        for id_p in list(self.puntos):
+            p = self.puntos[id_p]
+            if p.theta is None or len(p.obs) < 2:
+                continue
+            error_ancla = self.focal * np.linalg.norm(p.theta[:2] - p.xy_ancla)
+            if error_ancla > umbral:
+                errores.append(float(error_ancla))
+                quitadas += 1
+                del self.puntos[id_p]
+                continue
+            e_h = self._frame(p.ancla).estado
+            for id_f in [i for i in p.obs if i != p.ancla]:
+                c = fa.punto_en_camara_j(e_h, self._frame(id_f).estado, p.theta, self.R_i_c, self.p_i_c)
+                z = c["P_cj"][2]
+                error = np.inf if z <= z_min else self.focal * np.linalg.norm(c["P_cj"][:2] / z - p.obs[id_f])
+                if error > umbral:
+                    errores.append(float(error) if np.isfinite(error) else -1.0)
+                    quitadas += 1
+                    del p.obs[id_f]
+        return quitadas, errores
 
     # =================================================================
     # Paso 35.7 — Problema de la ventana
@@ -284,8 +390,10 @@ class VentanaDeslizante:
                 if id_f != p.ancla:
                     visuales.append(fa.FactorVisual(l, mapa[id_f], xy_f))
         estados = [f.estado for f in self.frames]
+        priores = [self._vincular_prior(mapa)]
+        priores += [fa.FactorVelocidadNula(mapa[i], sigma) for i, sigma in self.zupt.items()]
         prob = op.ProblemaLote(estados, puntos, imu, visuales, None, self.R_i_c, self.p_i_c,
-                               priores=[self._vincular_prior(mapa)])
+                               priores=priores)
         return prob, ids_puntos
 
     def _guardar(self, prob, ids_puntos):
@@ -305,9 +413,10 @@ class VentanaDeslizante:
         # 1. Factores que tocan al frame 0: el IMU con el siguiente, los visuales de los puntos
         #    anclados en él y el prior (que siempre lo toca: es el más antiguo)
         puntos_m = {l for l, id_p in enumerate(ids_puntos) if self.puntos[id_p].ancla == f0.id}
+        #    (de los priores, solo los que tocan al frame 0: el principal y su ZUPT, si tiene)
         sub = op.ProblemaLote(prob.estados, prob.puntos, [prob.factores_imu[0]],
                               [f for f in prob.factores_visuales if f.punto in puntos_m], None,
-                              self.R_i_c, self.p_i_c, priores=prob.priores)
+                              self.R_i_c, self.p_i_c, priores=[pr for pr in prob.priores if 0 in pr.indices])
         sub.thetas = prob.thetas
 
         # 2. Schur y prior nuevo, linealizado en la estimación actual
@@ -315,13 +424,39 @@ class VentanaDeslizante:
         self.prior = mg.prior_desde_schur(H_e, b_e, idx_r, prob.estados, self.eps)
         self.prior_ids = [self.frames[k].id for k in idx_r]
 
-        # 3. Sacar el frame, su preintegración y sus puntos (también los no triangulados)
+        # 3. Etapa 37: lo que sale, para el mapa (como el clon saliente del MSCKF)
+        saliente, puntos_mapa = self._salida_para_mapa(f0)
+
+        # 4. Sacar el frame, su preintegración, su ZUPT y sus puntos (también los no triangulados)
         for id_p in [i for i, p in self.puntos.items() if p.ancla == f0.id]:
             del self.puntos[id_p]
         for p in self.puntos.values():          # por seguridad: nadie más lo observa
             p.obs.pop(f0.id, None)
+        self.zupt.pop(f0.id, None)
         self.frames.pop(0)
         self.pres.pop(0)
+        return saliente, puntos_mapa
+
+    def _salida_para_mapa(self, f0):
+        """El frame que sale y sus puntos, con el formato del MSCKF (etapa 18):
+            saliente: {imagen, t_ns, R_w_c, p_w_c, obs: [(id, xy, z, paralaje [°])]}
+            puntos_mapa: [(id, p_w, paralaje [°])]
+        Los puntos son los anclados en él (los únicos que observa) con 3D; z = 1/ρ."""
+        R_w_c = f0.estado.R_w_i @ self.R_i_c
+        p_w_c = f0.estado.p_w + f0.estado.R_w_i @ self.p_i_c
+        obs, puntos_mapa = [], []
+        for p in self.puntos.values():
+            if p.ancla != f0.id or p.theta is None or len(p.obs) < 2:
+                continue
+            alfa, beta, rho = p.theta
+            p_w = R_w_c @ (np.array([alfa, beta, 1.0]) / rho) + p_w_c
+            ids_f = list(p.obs)
+            poses = [self.pose_camara(self._frame(i).estado) for i in ids_f]
+            paralaje = tri.angulo_paralaje(poses, np.array([p.obs[i] for i in ids_f]))
+            obs.append((p.id, p.xy_ancla.copy(), 1.0 / rho, paralaje))
+            puntos_mapa.append((p.id, p_w, paralaje))
+        saliente = {"imagen": f0.id, "t_ns": f0.t_ns, "R_w_c": R_w_c, "p_w_c": p_w_c, "obs": obs}
+        return saliente, puntos_mapa
 
     # =================================================================
     # Paso 35.9 — Descartar el segundo frame más reciente
@@ -358,6 +493,7 @@ class VentanaDeslizante:
                 continue
             self._reanclar(p, fd, siguiente)
             del p.obs[fd.id]
+        self.zupt.pop(fd.id, None)
         self.frames.pop(k)
 
     def _reanclar(self, p, viejo, nuevo):
