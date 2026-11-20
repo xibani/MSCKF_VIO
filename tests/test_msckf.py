@@ -277,8 +277,12 @@ def simulacion():
     error_0 = np.linalg.cholesky(P0) @ rng.normal(0.0, 1.0, 15)
     inicial = ms.inyectar_imu(verdad_0, -error_0)
 
+    # El filtro, con el ruido de píxel VERDADERO del simulador: config/msckf.yaml lleva el de los
+    # datos reales (2 px desde la etapa 31), y con él la σ del sesgo bajaba algo menos que sigma_0/5
+    cfg = copy.deepcopy(CFG)
+    cfg["correccion"]["ruido_px"] = cfg_sim["camara"]["ruido_px"]
     filtro = ms.Msckf(inicial, P0, s["imu"]["t_ns"][0], s["imu"]["w"][0], s["imu"]["a"][0],
-                      s["R_c_i"], s["t_c_i"], K[0, 0], CFG, cargar_config("triangulacion"))
+                      s["R_c_i"], s["t_c_i"], K[0, 0], cfg, cargar_config("triangulacion"))
     res = ms.ejecutar_secuencia(filtro, s["imu"], s["obs"], s["camaras"]["t_ns"])
     solo_imu = propagar_secuencia(inicial, s["imu"]["t_ns"], s["imu"]["w"], s["imu"]["a"],
                                   cargar_config("orientacion")["integracion"])
