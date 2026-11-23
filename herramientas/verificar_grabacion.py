@@ -46,8 +46,13 @@ def main():
     t_imu, w, a = euroc.leer_imu(euroc.ruta_imu(carpeta))
     t_cam, nombres = euroc.leer_cam(euroc.ruta_cam(carpeta))
     diag = euroc.leer_diag_cam(euroc.ruta_diag_cam(carpeta))
-    with open(carpeta / "meta.json", encoding="utf-8") as f:
-        meta = json.load(f)
+    try:
+        with open(carpeta / "meta.json", encoding="utf-8") as f:
+            meta = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # grabar.py escribe meta.json al TERMINAR: si falta o está vacío, la grabación no se cerró bien
+        print("AVISO: meta.json falta o está vacío: la grabación no se cerró bien (el final puede estar incompleto)")
+        meta = {"contadores": "desconocidos (sin meta.json)"}
     carpeta_png = euroc.carpeta_imagenes(carpeta)
     faltan = [n for n in nombres if not (carpeta_png / n).exists()]
 

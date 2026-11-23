@@ -13,6 +13,8 @@ Por cada imagen nueva:
 
 from dataclasses import dataclass, field
 
+import os
+
 import cv2
 import numpy as np
 
@@ -117,6 +119,35 @@ def predecir_con_giro(puntos, R_act_ant, K, dist):
     return prediccion, delante
 
 
+def sanear_prediccion(prediccion, puntos, forma, R_act_ant):
+    """Predicción por giro utilizable por Lucas-Kanade: finita y dentro de la imagen (con un margen
+    de media imagen). Las que no lo son vuelven a la posición de partida (como sin giro), con un
+    aviso. Con un giro grande entre dos imágenes (salto del filtro, hueco de frames), una dirección
+    casi perpendicular al eje óptico se proyecta, con la distorsión, a coordenadas enormes.
+    """
+    alto, ancho = forma
+    p = np.asarray(prediccion, dtype=np.float32).reshape(-1, 2).copy()
+    buenas = (np.all(np.isfinite(p), axis=1)
+              & (p[:, 0] > -0.5 * ancho) & (p[:, 0] < 1.5 * ancho)
+              & (p[:, 1] > -0.5 * alto) & (p[:, 1] < 1.5 * alto))
+    if not buenas.all():
+        angulo = np.degrees(np.arccos(np.clip((np.trace(R_act_ant) - 1.0) / 2.0, -1.0, 1.0)))
+        print(f"AVISO frontend: {int((~buenas).sum())} de {len(p)} predicciones por giro inservibles "
+              f"(giro entre imágenes {angulo:.1f}°): esas parten de su posición anterior", flush=True)
+        p[~buenas] = np.asarray(puntos, dtype=np.float32).reshape(-1, 2)[~buenas]
+    return p
+
+
+def volcar_entradas_lk(gris_a, gris_b, p_a, prediccion, R):
+    """Diagnóstico: si la variable de entorno VIO_VOLCAR_LK tiene una ruta, guarda ahí (y la
+    sobrescribe en cada llamada) todo lo que recibe calcOpticalFlowPyrLK. Si el programa se queda
+    colgado dentro, el archivo contiene las entradas exactas de la llamada que se atascó."""
+    ruta = os.environ.get("VIO_VOLCAR_LK")
+    if ruta:
+        np.savez_compressed(ruta, gris_a=gris_a, gris_b=gris_b, p_a=np.asarray(p_a),
+                            prediccion=np.asarray(prediccion), R=R)
+
+
 # =====================================================================
 # Paso 8.2 — Seguimiento con Lucas-Kanade y comprobación de ida y vuelta
 # =====================================================================
@@ -146,6 +177,8 @@ def seguir(gris_ant, gris_act, puntos, cfg_seg, giro=None):
     else:
         R_act_ant, K, dist = giro
         prediccion, _ = predecir_con_giro(puntos, R_act_ant, K, dist)
+        prediccion = sanear_prediccion(prediccion, puntos, gris_act.shape, R_act_ant)
+        volcar_entradas_lk(gris_ant, gris_act, p0, prediccion, R_act_ant)
         # OPTFLOW_USE_INITIAL_FLOW: el cuarto argumento ya no es "nada" sino el punto de partida
         p1, estado_ida, _ = cv2.calcOpticalFlowPyrLK(gris_ant, gris_act, p0, prediccion.reshape(-1, 1, 2).copy(),
                                                      flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **parametros)
@@ -156,6 +189,8 @@ def seguir(gris_ant, gris_act, puntos, cfg_seg, giro=None):
         p0_vuelta, estado_vuelta, _ = cv2.calcOpticalFlowPyrLK(gris_act, gris_ant, p1, None, **parametros)
     else:
         prediccion_vuelta, _ = predecir_con_giro(p1.reshape(-1, 2), R_act_ant.T, K, dist)
+        prediccion_vuelta = sanear_prediccion(prediccion_vuelta, p1.reshape(-1, 2), gris_ant.shape, R_act_ant.T)
+        volcar_entradas_lk(gris_act, gris_ant, p1, prediccion_vuelta, R_act_ant.T)
         p0_vuelta, estado_vuelta, _ = cv2.calcOpticalFlowPyrLK(
             gris_act, gris_ant, p1, prediccion_vuelta.reshape(-1, 1, 2).copy(),
             flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **parametros)

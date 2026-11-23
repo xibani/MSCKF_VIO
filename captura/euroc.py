@@ -116,16 +116,23 @@ def leer_diag_cam(ruta_csv):
         exposicion_us y ganancia (float).
     """
     columnas = {"t_sensor_ns": [], "t_llegada_ns": [], "exposicion_us": [], "ganancia": []}
+    malas = 0
     with open(ruta_csv, encoding="utf-8") as f:
         f.readline()                                  # saltar la cabecera
         for linea in f:
             if not linea.strip():
                 continue
-            t_s, t_l, exp, gan = linea.strip().split(",")
+            campos = linea.strip().split(",")
+            if len(campos) != 4:                      # línea cortada (p. ej. al parar la grabación)
+                malas += 1
+                continue
+            t_s, t_l, exp, gan = campos
             columnas["t_sensor_ns"].append(int(t_s))
             columnas["t_llegada_ns"].append(int(t_l))
             columnas["exposicion_us"].append(float(exp))
             columnas["ganancia"].append(float(gan))
+    if malas:
+        print(f"AVISO: {ruta_csv}: {malas} líneas incompletas ignoradas")
     return {
         "t_sensor_ns": np.array(columnas["t_sensor_ns"], dtype=np.int64),
         "t_llegada_ns": np.array(columnas["t_llegada_ns"], dtype=np.int64),

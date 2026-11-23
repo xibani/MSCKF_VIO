@@ -80,7 +80,8 @@ inicializacion:
   puntos_pnp_min: 10             # puntos con 3D para el PnP de un frame
   paralaje_min_triangular_grados: 1.0
   iteraciones_ba: 10             # ajuste de haces solo visual
-  error_ba_max_px: 2.0           # RMS de reproyección tras el ajuste
+  error_ba_max_px: 3.0           # RMS de reproyección tras el ajuste. 2 px valía en el simulador (1 px de ruido);
+                                 # con datos reales (~2 px, como msckf.yaml) salían 2,3–2,7 px y se rechazaba todo
   sigma_fijo: 1.0e-6             # gauge del ajuste: pose de l y distancia l–n
   sigma_libre: 1.0e6             # lo que no se fija (información ~0)
   # Alineación con la IMU
@@ -90,7 +91,7 @@ inicializacion:
   tolerancia_gravedad_m_s2: 0.5  # | |g| − 9,81 | antes del refinado (VINS: 0,5)
   iteraciones_gravedad: 4
   ajuste_visual_inercial: true   # paso 6: ajuste conjunto de la ventana tras la alineación (escala, g y b_a)
-  iteraciones_ajuste_vi: 15
+  iteraciones_ajuste_vi: 40       # con datos reales, 15 no bastaban (29 de 178 intentos sin converger)
   incertidumbre_escala_max: 0.03 # σ_L/L tras el ajuste: por encima, la escala no está determinada
   residuo_max: 0.02              # RMS del sistema lineal tras refinar [m y m/s] (ver tests)
 
@@ -102,3 +103,7 @@ estimador:
   frames_inicializacion: 11        # 11 frames x 0,1 s = ventanas de 1 s (como en los tests de la 36)
   reintento_s: 0.25                # entre dos intentos de inicializar
   covarianza_en_recuentos: true    # σ de vio_recuentos.csv (una linealización más por imagen)
+  # Sesgo del giroscopio en los reposos antes de inicializar (inicializacion.SesgoEnReposo)
+  reposo_sesgo_s: 1.0              # ventana para decidir que está quieta
+  reposo_sigma_gir_max_dps: 0.5    # desviación típica máxima del giroscopio (como vio.yaml)
+  reposo_sigma_acc_max_m_s2: 0.1   # y del acelerómetro (girando a velocidad constante varía)

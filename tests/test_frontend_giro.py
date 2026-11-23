@@ -149,3 +149,14 @@ def test_frontend_usa_el_giro_solo_si_esta_activado_y_se_lo_dan():
     assert est["con_giro"] == 0
 
     assert seguidos_con_giro > 2 * max(seguidos_sin_giro, 1)
+
+def test_sanear_prediccion_quita_las_inservibles():
+    """Predicciones no finitas o muy fuera de la imagen vuelven a la posición de partida."""
+    import numpy as np
+    from vio.frontend import sanear_prediccion
+    puntos = np.array([[100.0, 100.0], [200.0, 150.0], [300.0, 200.0], [400.0, 250.0]], np.float32)
+    pred = np.array([[105.0, 98.0], [np.inf, 150.0], [3e9, -2e9], [np.nan, 1.0]], np.float32)
+    salida = sanear_prediccion(pred, puntos, (480, 640), np.eye(3))
+    assert np.allclose(salida[0], [105.0, 98.0])
+    assert np.allclose(salida[1:], puntos[1:])
+    assert np.all(np.isfinite(salida))

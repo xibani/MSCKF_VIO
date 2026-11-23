@@ -196,3 +196,23 @@ def test_rechaza_el_movimiento_suave():
     r = ini.inicializar(frames, pres, s["R_c_i"], s["t_c_i"], K[0, 0], cfg_test())
     assert not r["ok"] and "escala sin determinar" in r["motivo"]
     assert r["incertidumbre_escala"] > 0.05
+
+
+# =====================================================================
+# Etapa 37 — Sesgo del giroscopio en reposo
+# =====================================================================
+def test_sesgo_en_reposo():
+    """Quieta: estima el sesgo verdadero. Girando a velocidad CONSTANTE (giroscopio estable, pero
+    la gravedad cambia de dirección en los ejes de la IMU): no lo confunde con reposo."""
+    cfg_e = CFG_VINS["estimador"]
+    R0, p0 = so3.exp_so3([0.1, -0.05, 0.3]), np.array([0.0, 0.0, 1.5])
+    s, _ = secuencia(np.random.default_rng(6), pose=lambda t: (R0, p0), duracion_s=2.0)
+    det = ini.SesgoEnReposo(cfg_e)
+    quieta = [det.actualizar(t, w, a) for t, w, a in zip(s["imu"]["t_ns"], s["imu"]["w"], s["imu"]["a"])]
+    assert any(quieta)
+    assert np.degrees(np.abs(det.b_g - s["verdad"]["b_g"][-1])).max() < 0.05     # °/s
+
+    s, _ = secuencia(np.random.default_rng(7), duracion_s=2.0,
+                     pose=lambda t: (so3.exp_so3([0.6 * t, 0.0, 0.0]) @ R0, p0))   # 34 °/s alrededor de x
+    det = ini.SesgoEnReposo(cfg_e)
+    assert not any(det.actualizar(t, w, a) for t, w, a in zip(s["imu"]["t_ns"], s["imu"]["w"], s["imu"]["a"]))

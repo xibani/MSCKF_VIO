@@ -93,6 +93,47 @@ def preintegrar_entre(t_imu, w, a, t_ini_ns, t_fin_ns, b_g, b_a, ruido):
 
 
 # =====================================================================
+# Paso 37.5 — Sesgo del giroscopio en reposo, antes de inicializar
+# =====================================================================
+class SesgoEnReposo:
+    """Estima el sesgo del giroscopio cada vez que la IMU está quieta (como el MSCKF al arrancar).
+
+    Ventana deslizante de las últimas muestras (reposo_sesgo_s). Quieta si la desviación típica
+    del giroscopio Y la del acelerómetro, en cada eje, están por debajo de sus umbrales: con
+    solo el giroscopio, un giro a velocidad constante pasaría por reposo (y su media no es el
+    sesgo); girando, la gravedad cambia de dirección en los ejes de la IMU y el acelerómetro varía.
+    Mientras está quieta, b_g = media del giroscopio en la ventana (se queda el último valor).
+
+    Motivo (medido en la grabación 20261120_142201): inicializando con b_g = 0, la rotación l–n del
+    giroscopio llevaba sesgo·Δt (1–2° en la ventana) y la traslación l–n salía con pocos inliers
+    en 44 de 178 intentos; con el sesgo conocido, en 3.
+    """
+
+    def __init__(self, cfg_estimador):
+        self.duracion_ns = int(cfg_estimador["reposo_sesgo_s"] * 1e9)
+        self.sigma_gir = np.radians(cfg_estimador["reposo_sigma_gir_max_dps"])
+        self.sigma_acc = cfg_estimador["reposo_sigma_acc_max_m_s2"]
+        self.muestras = []            # (t_ns, w (3,), a (3,)) de la ventana
+        self.b_g = None               # último sesgo estimado en reposo (None: aún ninguno)
+        self.t_ns = None              # cuándo
+
+    def actualizar(self, t_ns, w_m, a_m):
+        """Una muestra. Devuelve True si la ventana actual está quieta (y ha actualizado b_g)."""
+        self.muestras.append((int(t_ns), np.asarray(w_m, dtype=float), np.asarray(a_m, dtype=float)))
+        while self.muestras and self.muestras[0][0] < int(t_ns) - self.duracion_ns:
+            self.muestras.pop(0)
+        if self.muestras[-1][0] - self.muestras[0][0] < 0.9 * self.duracion_ns:
+            return False                                  # aún no hay ventana completa
+        w = np.array([m[1] for m in self.muestras])
+        a = np.array([m[2] for m in self.muestras])
+        if w.std(axis=0).max() < self.sigma_gir and a.std(axis=0).max() < self.sigma_acc:
+            self.b_g = w.mean(axis=0)
+            self.t_ns = int(t_ns)
+            return True
+        return False
+
+
+# =====================================================================
 # Paso 36.1 — SfM solo visual
 # =====================================================================
 def rotacion_relativa_giro(pres, desde, hasta):

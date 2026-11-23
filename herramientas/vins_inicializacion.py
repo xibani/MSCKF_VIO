@@ -5,7 +5,15 @@ Uso, desde la raíz del repositorio:
     python -m herramientas.vins_inicializacion                       simulador: 4 escenarios x 5 semillas
     python -m herramientas.vins_inicializacion --grabacion datos/X   una grabación EuRoC (real o sintética)
 Opciones de --grabacion: --frames 11 (frames por ventana), --cada 2 (una imagen de cada N entre
-frames), --paso 5 (imágenes entre dos intentos), --sin-calibracion-acc.
+frames), --paso 5 (imágenes entre dos intentos), --sin-calibracion-acc, y --ajustar clave=valor
+(repetible) para probar otros umbrales de la sección "inicializacion" de config/vins.yaml sin
+tocarlo, p. ej.:
+    python -m herramientas.vins_inicializacion --grabacion datos/X --cada 3 --ajustar incertidumbre_escala_max=0.06
+De cada intento se escribe el motivo y los números que lo explican (excitación, paralaje, error
+del ajuste solo visual, |g|, incertidumbre de la escala), y al final un resumen de los motivos.
+Sesgo del giroscopio con que se preintegra: por defecto, el del último reposo antes de la ventana
+(inicializacion.SesgoEnReposo, lo mismo que hace VINS en el pipeline); --sesgo-giro-msckf usa el
+que estima el MSCKF en ese instante y --sin-sesgo-reposo, 0 (como antes de la etapa 37).
 
 Con una grabación, el VIO de siempre (front-end + MSCKF, apps/pi_vio) da las pistas de cada
 imagen y su propia estimación. Se intenta inicializar con ventanas que van avanzando y, para cada
@@ -105,25 +113,78 @@ def inclinacion_grados(R_a, R_b):
     return float(np.degrees(np.arccos(np.clip(za @ zb, -1.0, 1.0))))
 
 
-def grabacion(carpeta, n_frames, cada, paso, sin_calibracion_acc):
+def detalle(r):
+    """Los números de un intento (los que haya llegado a calcular)."""
+    partes = []
+    if r.get("excitacion") is not None:
+        partes.append(f"exc {r['excitacion']:.2f} m/s²")
+    if r.get("paralaje_px"):
+        partes.append(f"paralaje {r['paralaje_px']:.0f} px")
+    if r.get("rms_px") is not None:
+        partes.append(f"rms {r['rms_px']:.2f} px")
+    if r.get("g_lineal") is not None:
+        partes.append(f"|g| {r['g_lineal']:.2f}")
+    if r.get("incertidumbre_escala") is not None:
+        partes.append(f"σ_L/L {100 * r['incertidumbre_escala']:.1f} %")
+    return ", ".join(partes)
+
+
+def aplicar_ajustes(cfg, ajustes):
+    """--ajustar clave=valor sobre cfg["inicializacion"] (el valor se convierte al tipo del YAML)."""
+    for ajuste in ajustes:
+        clave, valor = ajuste.split("=", 1)
+        if clave not in cfg["inicializacion"]:
+            raise SystemExit(f"--ajustar: {clave} no está en la sección inicializacion de vins.yaml")
+        tipo = type(cfg["inicializacion"][clave])
+        cfg["inicializacion"][clave] = (valor.lower() in ("1", "true", "si", "sí")) if tipo is bool else tipo(valor)
+        print(f"inicializacion.{clave} = {cfg['inicializacion'][clave]}")
+
+
+def sesgos_en_reposo(t_imu, w_imu, a_imu, cfg):
+    """Recorre la IMU con SesgoEnReposo. Devuelve: (instantes (K,), sesgos (K, 3)) de cada reposo."""
+    detector = ini.SesgoEnReposo(cfg["estimador"])
+    t_r, b_r = [], []
+    for t, w, a in zip(t_imu, w_imu, a_imu):
+        if detector.actualizar(t, w, a):
+            t_r.append(int(t))
+            b_r.append(detector.b_g.copy())
+    return np.array(t_r, dtype=np.int64), np.array(b_r).reshape(-1, 3)
+
+
+def grabacion(carpeta, n_frames, cada, paso, sin_calibracion_acc, ajustes=(), sesgo_msckf=False,
+              sin_sesgo_reposo=False):
     from vio.pipeline import leer_poses
     carpeta = Path(carpeta)
     print(f"Pasando {carpeta} por el VIO de siempre (MSCKF)...")
     imagenes, (t_imu, w_imu, a_imu), R_c_i, t_c_i, K = recorrer_grabacion(carpeta, sin_calibracion_acc)
     print(f"{len(imagenes)} imágenes con pose del MSCKF")
     verdad = leer_poses(carpeta / "verdad.csv") if (carpeta / "verdad.csv").exists() else None
-    cfg = cargar_config("vins")
+    cfg = copy.deepcopy(cargar_config("vins"))
+    aplicar_ajustes(cfg, ajustes)
     ruido = ruido_desde_config(cfg["preintegracion"])
 
-    aceptadas = 0
+    from collections import Counter
+    t_rep, b_rep = sesgos_en_reposo(t_imu, w_imu, a_imu, cfg)
+    if len(t_rep):
+        print(f"Reposos detectados: {len(t_rep)} muestras quietas; primer sesgo del giroscopio "
+              f"{np.round(np.degrees(b_rep[0]), 3)} °/s")
+    aceptadas, motivos = 0, Counter()
     for inicio in range(0, len(imagenes) - (n_frames - 1) * cada, paso):
         frames = [imagenes[inicio + cada * q] for q in range(n_frames)]
+        b_g0 = np.zeros(3)
+        if sesgo_msckf:
+            b_g0 = frames[0].b_g
+        elif not sin_sesgo_reposo:
+            antes = np.flatnonzero(t_rep <= frames[0].t_ns)
+            if len(antes):
+                b_g0 = b_rep[antes[-1]]
         pres = [ini.preintegrar_entre(t_imu, w_imu, a_imu, frames[q].t_ns, frames[q + 1].t_ns,
-                                      np.zeros(3), np.zeros(3), ruido) for q in range(n_frames - 1)]
+                                      b_g0, np.zeros(3), ruido) for q in range(n_frames - 1)]
         r = ini.inicializar(frames, pres, R_c_i, t_c_i, K[0, 0], cfg)
         t_s = (frames[0].t_ns - imagenes[0].t_ns) / 1e9
         if not r["ok"]:
-            print(f"t = {t_s:6.2f} s  rechazada: {r['motivo']}")
+            print(f"t = {t_s:6.2f} s  rechazada: {r['motivo']}   [{detalle(r)}]")
+            motivos[r["motivo"].split(" (")[0]] += 1
             continue
         aceptadas += 1
         L_vins = ini.longitud_trayectoria(r["estados"])
@@ -139,6 +200,7 @@ def grabacion(carpeta, n_frames, cada, paso, sin_calibracion_acc):
                       f"{inclinacion_grados(r['estados'][0].R_w_i, R_v[k[0]]):.2f}°")
         print(texto)
     print(f"{aceptadas} inicializaciones aceptadas")
+    print("Rechazos: " + "; ".join(f"{m} ×{n}" for m, n in motivos.most_common()))
 
 
 def main():
@@ -149,11 +211,18 @@ def main():
     parser.add_argument("--paso", type=int, default=5)
     parser.add_argument("--semillas", type=int, default=5)
     parser.add_argument("--sin-calibracion-acc", action="store_true")
+    parser.add_argument("--sesgo-giro-msckf", action="store_true",
+                        help="preintegrar con el sesgo del giroscopio del MSCKF (experimento)")
+    parser.add_argument("--sin-sesgo-reposo", action="store_true",
+                        help="preintegrar con sesgo 0 (como antes de la etapa 37)")
+    parser.add_argument("--ajustar", action="append", default=[], metavar="CLAVE=VALOR",
+                        help="otro valor para un umbral de inicializacion (repetible)")
     args = parser.parse_args()
     if args.grabacion is None:
         simulador(range(1, args.semillas + 1))
     else:
-        grabacion(args.grabacion, args.frames, args.cada, args.paso, args.sin_calibracion_acc)
+        grabacion(args.grabacion, args.frames, args.cada, args.paso, args.sin_calibracion_acc, args.ajustar,
+                  args.sesgo_giro_msckf, args.sin_sesgo_reposo)
 
 
 if __name__ == "__main__":
