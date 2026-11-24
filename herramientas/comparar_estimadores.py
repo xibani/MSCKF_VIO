@@ -220,6 +220,15 @@ def main():
              if t in ejecuciones else {"imagenes": None} for t in ("msckf", "vins")]
     texto = tabla(filas)
     print(texto)
+    # Aviso: si tras la referencia común casi no hay recorrido, la prueba no se ha medido. Pasa cuando
+    # VINS se inicializa ya andando: su primera imagen quieta es el reposo FINAL y desde ahí no hay lazo
+    cortas = [f for f in filas if f.get("imagenes") and f["recorrido_m"] < cfg_prueba["recorrido_min_m"]]
+    if cortas and t_ref_ns is not None:
+        t_ref_s = (t_ref_ns - min(e["t_primera"] for e in ejecuciones.values())) / 1e9
+        print(f"AVISO: desde la referencia común (t = {t_ref_s:.2f} s) hay menos de "
+              f"{cfg_prueba['recorrido_min_m']} m de recorrido: la prueba no se ha medido. Lo normal es que VINS "
+              f"no se inicializara con el vaivén sobre la marca, sino ya andando. Repite con --vins-reposo "
+              f"(VINS arranca en el reposo inicial, como el MSCKF) o graba con un vaivén más amplio.")
     (carpeta / "comparacion_estimadores.txt").write_text(texto + "\n", encoding="utf-8")
     print(f"Tabla: {carpeta / 'comparacion_estimadores.txt'}")
 
