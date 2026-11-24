@@ -92,15 +92,18 @@ inicializacion:
   iteraciones_gravedad: 4
   ajuste_visual_inercial: true   # paso 6: ajuste conjunto de la ventana tras la alineación (escala, g y b_a)
   iteraciones_ajuste_vi: 40       # con datos reales, 15 no bastaban (29 de 178 intentos sin converger)
-  incertidumbre_escala_max: 0.03 # σ_L/L tras el ajuste: por encima, la escala no está determinada
+  incertidumbre_escala_max: 0.06 # σ_L/L tras el ajuste: por encima, la escala no está determinada.
+                                 # Grabación real 20261120_142201: la dispersión de escala/MSCKF es la misma
+                                 # con 3 % que con 6 % (σ_log 0,14-0,15): σ_L/L subestima ~x4 el error real,
+                                 # así que 3 % solo retrasaba la inicialización (28 s frente a 8,5 s)
   residuo_max: 0.02              # RMS del sistema lineal tras refinar [m y m/s] (ver tests)
 
 # ---------------------------------------------------------------------
 # Etapa 37 — Estimador en el pipeline (vins/estimador.py)
 # ---------------------------------------------------------------------
 estimador:
-  intervalo_inicializacion_s: 0.1  # separación entre frames candidatos para inicializar
-  frames_inicializacion: 11        # 11 frames x 0,1 s = ventanas de 1 s (como en los tests de la 36)
+  intervalo_inicializacion_s: 0.15 # separación entre frames candidatos (= --cada 3 a 20 Hz en vins_inicializacion)
+  frames_inicializacion: 11        # 11 frames x 0,15 s = ventanas de 1,5 s (con 1 s faltaba paralaje en datos reales)
   reintento_s: 0.25                # entre dos intentos de inicializar
   covarianza_en_recuentos: true    # σ de vio_recuentos.csv (una linealización más por imagen)
   # Sesgo del giroscopio en los reposos antes de inicializar (inicializacion.SesgoEnReposo)

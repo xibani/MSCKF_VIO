@@ -78,18 +78,23 @@ def test_interfaz_como_el_msckf():
 # =====================================================================
 # Inicialización visual-inercial en marcha
 # =====================================================================
+T_REPOSO = 2.0     # s quieta al principio del escenario de inicialización en marcha
+
+
 def test_inicializa_solo_al_moverse_y_sigue_a_la_verdad():
-    """1 s quieta, 1 s de arranque suave y después el movimiento con vaivén: mientras está
+    """2 s quieta, 1 s de arranque suave y después el movimiento con vaivén: mientras está
     quieta no inicializa (no hay pose), y después arranca sola y sigue a la verdad (alineando
-    la primera pose: VINS define su mundo al inicializar)."""
+    la primera pose: VINS define su mundo al inicializar). El reposo tiene que durar más que
+    una ventana de inicialización (frames_inicializacion x intervalo = 1,5 s) para que algún
+    intento caiga entero en reposo y se rechace por IMU poco excitada."""
     cfg_sim = copy.deepcopy(CFG_SIM)
-    cfg_sim["trayectoria"]["duracion_s"] = 5.0
+    cfg_sim["trayectoria"]["duracion_s"] = 6.0
     cfg_sim["trayectoria"]["oscilacion_z_m"] = 0.15
     cfg_sim["trayectoria"]["omega_z_rad_s"] = 4.0
     cfg_sim["mundo"]["puntos_por_superficie"] = 100
     cfg_tr = cfg_sim["trayectoria"]
     s = sim.generar_secuencia(cfg_sim, K, (640, 480), np.random.default_rng(2),
-                              pose=lambda t: sim.pose_con_reposo(t, cfg_tr, 1.0, 1.0))
+                              pose=lambda t: sim.pose_con_reposo(t, cfg_tr, T_REPOSO, 1.0))
     imu, t_cam = s["imu"], s["camaras"]["t_ns"]
     vins = VinsEstimador(imu["t_ns"][0], imu["w"][0], imu["a"][0], s["R_c_i"], s["t_c_i"], K[0, 0],
                          cfg_vins_sim(), ruido_sim(cfg_sim))
@@ -110,9 +115,9 @@ def test_inicializa_solo_al_moverse_y_sigue_a_la_verdad():
             motivos.append(r["motivo_inicializacion"])
 
     t_inicio = (t_est[0] - t_cam[0]) / 1e9
-    assert t_inicio > 1.0                                      # quieta no inicializa
+    assert t_inicio > T_REPOSO                                 # quieta no inicializa
     assert any("poco excitada" in m for m in motivos)
-    assert t_inicio < 4.0                                      # moviéndose, sí
+    assert t_inicio < T_REPOSO + 3.0                           # moviéndose, sí
     t_v, p_v, R_v = s["verdad"]["t_ns"], s["verdad"]["p_w"], s["verdad"]["R_w_i"]
     p_ali, _ = alinear(np.array(t_est), np.array(p_est), np.array(R_est), t_v, p_v, R_v)
     error = np.linalg.norm(np.array(p_est) - p_ali, axis=1)
