@@ -112,15 +112,29 @@ def ejecutar(carpeta, tipo, arranque_vins, calib_acc, aviso=100, volcado_s=30.0)
             "R": np.array([r["R_w_i"] for r in resultados])}
 
 
-def resumir(e, cfg_prueba, verdad=None, distancia_real=None, t_desde=None):
+def indice_referencia(e, t_ref_ns=None):
+    """Índice de la imagen desde la que se mide la prueba (cierre, recta): la primera imagen
+    quieta (ZUPT) con t >= t_ref_ns; si no hay ninguna quieta, la primera con t >= t_ref_ns.
+    Sin t_ref_ns: desde el arranque del estimador."""
+    res = e["resultados"]
+    t_min = e["t_ns"][0] if t_ref_ns is None else t_ref_ns
+    quietas = [k for k, r in enumerate(res) if r["msckf"].get("quieto") and e["t_ns"][k] >= t_min]
+    if quietas:
+        return quietas[0]
+    despues = np.nonzero(e["t_ns"] >= t_min)[0]
+    return int(despues[0]) if len(despues) else 0
+
+
+def resumir(e, cfg_prueba, verdad=None, distancia_real=None, t_desde=None, t_ref_ns=None):
     """Números de una ejecución (dict). t_desde: comparar con la verdad solo desde ese instante
-    (el arranque del estimador que arranca más tarde: mismo intervalo para los dos)."""
+    (el arranque del estimador que arranca más tarde: mismo intervalo para los dos).
+    t_ref_ns: instante común desde el que se mide la prueba (ver indice_referencia)."""
     res = e["resultados"]
     if not res:
         return {"imagenes": 0}
-    # Referencia de la prueba: la primera imagen quieta (ZUPT) tras arrancar; si no hay, la primera
-    quietas = [k for k, r in enumerate(res) if r["msckf"].get("quieto")]
-    i0 = quietas[0] if quietas else 0
+    # Referencia de la prueba: la primera imagen quieta a partir del instante común. Así los dos
+    # estimadores miden el cierre y la recta desde la MISMA posición física de la placa
+    i0 = indice_referencia(e, t_ref_ns)
     t_s = (e["t_ns"][i0:] - e["t_ns"][i0]) / 1e9
     m = lazo.metricas_lazo(t_s, e["p"][i0:], cfg_prueba["paso_min_m"], cfg_prueba["recorrido_min_m"])
     fila = {"arranque_s": (e["t_ns"][0] - e["t_primera"]) / 1e9, "imagenes": len(res),
@@ -198,8 +212,12 @@ def main():
     # Con verdad: los dos en el mismo intervalo (desde el arranque del que arranca más tarde)
     arrancados = [e["t_ns"][0] for e in ejecuciones.values() if e["resultados"]]
     t_desde = max(arrancados) if arrancados else None
-    filas = [resumir(ejecuciones[t], cfg_prueba, verdad, args.distancia_real, t_desde) if t in ejecuciones
-             else {"imagenes": None} for t in ("msckf", "vins")]
+    # Referencia común de la prueba: la primera imagen quieta de cada estimador tras SU arranque, y
+    # de esos instantes el más tardío. Si VINS arranca a los 10 s, el MSCKF tampoco cuenta lo de antes
+    referencias = [e["t_ns"][indice_referencia(e)] for e in ejecuciones.values() if e["resultados"]]
+    t_ref_ns = max(referencias) if referencias else None
+    filas = [resumir(ejecuciones[t], cfg_prueba, verdad, args.distancia_real, t_desde, t_ref_ns)
+             if t in ejecuciones else {"imagenes": None} for t in ("msckf", "vins")]
     texto = tabla(filas)
     print(texto)
     (carpeta / "comparacion_estimadores.txt").write_text(texto + "\n", encoding="utf-8")
