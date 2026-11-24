@@ -72,6 +72,9 @@ class VinsEstimador:
             self._t = int(t_ns)
             self._R_giro = np.eye(3)
             self._w_ant = np.array(w_m, dtype=float)
+            # Etapa 37: sesgo del giroscopio en los reposos (se usa al preintegrar para inicializar)
+            self.reposo = ini.SesgoEnReposo(self.cfg_e)
+            self.reposo.actualizar(t_ns, w_m, a_m)
 
     # =================================================================
     # Estado (lo que lee el pipeline)
@@ -104,6 +107,13 @@ class VinsEstimador:
                 self._P = np.zeros((DIM, DIM))
         return self._P
 
+    @property
+    def sesgo_giro(self):
+        """Sesgo del giroscopio que se usa antes de inicializar: el del último reposo, o 0."""
+        if self.inicializado or self.reposo.b_g is None:
+            return np.zeros(3)
+        return self.reposo.b_g
+
     # =================================================================
     # IMU
     # =================================================================
@@ -112,9 +122,10 @@ class VinsEstimador:
             self.ventana.anadir_imu(t_ns, w_m, a_m)
             return
         w_m = np.asarray(w_m, dtype=float)
+        self.reposo.actualizar(t_ns, w_m, a_m)
         dt = (int(t_ns) - self._t) / 1e9
         if dt > 0:
-            self._R_giro = self._R_giro @ so3.exp_so3(0.5 * (self._w_ant + w_m) * dt)
+            self._R_giro = self._R_giro @ so3.exp_so3((0.5 * (self._w_ant + w_m) - self.sesgo_giro) * dt)
             self._t = int(t_ns)
         self._w_ant = w_m
         self.imu.append((int(t_ns), w_m, np.asarray(a_m, dtype=float)))
@@ -125,7 +136,7 @@ class VinsEstimador:
             return
         dt = (int(t_ns) - self._t) / 1e9
         if dt > 0:
-            self._R_giro = self._R_giro @ so3.exp_so3(self._w_ant * dt)
+            self._R_giro = self._R_giro @ so3.exp_so3((self._w_ant - self.sesgo_giro) * dt)
             self._t = int(t_ns)
 
     # =================================================================
@@ -193,8 +204,9 @@ class VinsEstimador:
         w = np.array([m[1] for m in self.imu])
         a = np.array([m[2] for m in self.imu])
         frames = self.candidatos
+        # Preintegración con el sesgo del giroscopio del último reposo (0 si no ha habido ninguno)
         pres = [ini.preintegrar_entre(t_imu, w, a, frames[q].t_ns, frames[q + 1].t_ns,
-                                      np.zeros(3), np.zeros(3), self.ruido) for q in range(len(frames) - 1)]
+                                      self.sesgo_giro, np.zeros(3), self.ruido) for q in range(len(frames) - 1)]
         res = ini.inicializar(frames, pres, self.R_c_i, self.t_c_i, self.focal, self.cfg)
         if not res["ok"]:
             return {"inicializado": False, "motivo_inicializacion": res["motivo"]}
